@@ -7,7 +7,19 @@ const pool = mysql.createPool({
     password: process.env.DB_PASS,
     database: process.env.DB_NAME,
     waitForConnections: true,
-    connectionLimit: 10
+    connectionLimit: 10,
+    queueLimit: 0
+});
+
+// Tambahkan log ini untuk cek koneksi saat startup
+pool.getConnection((err, connection) => {
+    if (err) {
+        console.error("❌ [DB] Gagal Koneksi ke MySQL:", err.message);
+        console.log("👉 Pastikan IP MacBook sudah di-whitelist di server database atau gunakan localhost jika DB ada di laptop.");
+    } else {
+        console.log("✅ [DB] Terhubung ke Database Tangerang Mandiri.");
+        connection.release();
+    }
 });
 
 module.exports = pool.promise();
