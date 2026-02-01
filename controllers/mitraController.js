@@ -1,7 +1,8 @@
-const db = require('../config/db'); // Asumsi Anda punya koneksi db
+const db = require('../config/db');
 
 // 1. Ambil semua Mitra beserta Layanan mereka
-exports.getAllMitra = (req, res) => {
+exports.getAllMitra = async (req, res) => {
+    console.log(">>> [GET] Request daftar semua mitra masuk...");
     const query = `
         SELECT s.*, GROUP_CONCAT(sv.service_name SEPARATOR ', ') as services
         FROM stores s
@@ -9,45 +10,75 @@ exports.getAllMitra = (req, res) => {
         WHERE s.is_active = 1
         GROUP BY s.id
     `;
-    db.query(query, (err, results) => {
-        if (err) return res.status(500).json({ error: err.message });
+    try {
+        const [results] = await db.query(query);
+        console.log(`>>> [DB Success] Berhasil mengambil ${results.length} mitra.`);
+
+        // Log sampel data pertama untuk cek struktur
+        if (results.length > 0) {
+            console.log(">>> [Sample Data]:", results[0]);
+        }
+
         res.json(results);
-    });
+    } catch (err) {
+        console.error(">>> [DB Error] getAllMitra:", err.message);
+        res.status(500).json({ error: err.message });
+    }
 };
 
 // 2. Ambil Detail satu Mitra dan Daftar Jasa Lengkap
-exports.getMitraDetail = (req, res) => {
+exports.getMitraDetail = async (req, res) => {
     const storeId = req.params.id;
+    console.log(`>>> [GET] Request detail mitra ID: ${storeId}`);
+
     const storeQuery = "SELECT * FROM stores WHERE id = ?";
     const serviceQuery = "SELECT * FROM services WHERE store_id = ?";
 
-    db.query(storeQuery, [storeId], (err, store) => {
-        if (err) return res.status(500).json({ error: err.message });
+    try {
+        const [store] = await db.query(storeQuery, [storeId]);
+        const [services] = await db.query(serviceQuery, [storeId]);
 
-        db.query(serviceQuery, [storeId], (err, services) => {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json({ ...store[0], services });
-        });
-    });
+        if (store.length === 0) {
+            console.warn(`>>> [Warn] Mitra dengan ID ${storeId} tidak ditemukan.`);
+            return res.status(404).json({ message: "Mitra tidak ditemukan" });
+        }
+
+        console.log(`>>> [DB Success] Detail mitra ${store[0].store_name} ditemukan dengan ${services.length} layanan.`);
+        res.json({ ...store[0], services });
+    } catch (err) {
+        console.error(`>>> [DB Error] getMitraDetail ID ${storeId}:`, err.message);
+        res.status(500).json({ error: err.message });
+    }
 };
 
 // 3. Update Profil Mitra
-exports.updateMitra = (req, res) => {
-    const { store_name, description, address, is_active } = req.body;
+exports.updateMitra = async (req, res) => {
+    const { store_name } = req.body;
+    console.log(`>>> [PUT] Update mitra ID: ${req.params.id} (${store_name})`);
+
+    const { description, address, is_active } = req.body;
     const query = "UPDATE stores SET store_name=?, description=?, address=?, is_active=? WHERE id=?";
 
-    db.query(query, [store_name, description, address, is_active, req.params.id], (err, result) => {
-        if (err) return res.status(500).json({ error: err.message });
+    try {
+        const [result] = await db.query(query, [store_name, description, address, is_active, req.params.id]);
+        console.log(">>> [DB Success] Baris terpengaruh:", result.affectedRows);
         res.json({ message: "Profil mitra berhasil diperbarui" });
-    });
+    } catch (err) {
+        console.error(">>> [DB Error] updateMitra:", err.message);
+        res.status(500).json({ error: err.message });
+    }
 };
 
-// 4. Hapus Mitra (Soft Delete atau Hard Delete)
-exports.deleteMitra = (req, res) => {
-    // Sebaiknya is_active diubah ke 0 saja agar data order lama tidak hilang (Soft Delete)
+// 4. Hapus Mitra
+exports.deleteMitra = async (req, res) => {
+    console.log(`>>> [DELETE] Request hapus mitra ID: ${req.params.id}`);
     const query = "DELETE FROM stores WHERE id = ?";
-    db.query(query, [req.params.id], (err, result) => {
-        if (err) return res.status(500).json({ error: err.message });
+    try {
+        const [result] = await db.query(query, [req.params.id]);
+        console.log(">>> [DB Success] Baris dihapus:", result.affectedRows);
         res.json({ message: "Mitra berhasil dihapus" });
-    });
+    } catch (err) {
+        console.error(">>> [DB Error] deleteMitra:", err.message);
+        res.status(500).json({ error: err.message });
+    }
 };

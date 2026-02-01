@@ -23,7 +23,9 @@ app.use('/api/auth', authRoutes);
 app.use('/api', mitraRoutes); // 2. Daftarkan rute mitra (tanpa /auth karena ini rute publik/manajemen)
 
 // Menjalankan Server
+// Ganti bagian app.listen kamu dengan ini:
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+    // Tips: Cetak IP asli di console agar mudah copy-paste
+    console.log(`Server aktif di: http://192.168.176.251:${PORT}`);
 });
