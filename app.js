@@ -2,16 +2,17 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const authRoutes = require('./routes/authRoutes');
+const mitraRoutes = require('./routes/mitraRoutes'); // 1. Import rute mitra baru
 
 const app = express();
 
 // Middleware
-app.use(cors()); // Mengizinkan akses dari aplikasi mobile
-app.use(express.json()); // Membaca body request format JSON
+app.use(cors());
+app.use(express.json());
 
-// Route Pengetesan (Sesuai rencana sebelumnya)
+// Route Pengetesan
 app.get('/api', (req, res) => {
-    res.json({ 
+    res.json({
         message: "Halo dari Node.js! Jalur kabel data sudah benar.",
         status: "Connected"
     });
@@ -19,6 +20,7 @@ app.get('/api', (req, res) => {
 
 // Routes API
 app.use('/api/auth', authRoutes);
+app.use('/api', mitraRoutes); // 2. Daftarkan rute mitra (tanpa /auth karena ini rute publik/manajemen)
 
 // Menjalankan Server
 const PORT = process.env.PORT || 3000;
