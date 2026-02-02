@@ -62,6 +62,7 @@ exports.getStoreProfile = async (req, res) => {
 exports.updateStoreProfile = async (req, res) => {
     const { id } = req.params;
 
+    // Data teks otomatis masuk ke req.body karena sudah diproses multer/express.json
     const {
         store_name, identity_number, category, address,
         latitude, longitude, bank_name, bank_account_number,
@@ -69,70 +70,37 @@ exports.updateStoreProfile = async (req, res) => {
     } = req.body;
 
     try {
-        // 1. Ambil data lama untuk pengecekan
-        const [existing] = await db.query(
-            "SELECT store_logo_url, approval_status, is_active FROM stores WHERE id = ?",
-            [id]
-        );
+        // 1. Cek apakah mitra ada & ambil data lama (untuk mempertahankan logo jika tidak ganti foto)
+        const [existing] = await db.query("SELECT store_logo_url FROM stores WHERE id = ?", [id]);
+        if (existing.length === 0) return res.status(404).json({ message: "Mitra tidak ditemukan" });
 
-        if (existing.length === 0) {
-            return res.status(404).json({ message: "Mitra tidak ditemukan" });
-        }
-
-        // 2. Logika Logo: Gunakan file baru jika ada, jika tidak gunakan yang lama
+        // 2. Tentukan logo_url (Gunakan file baru jika ada, jika tidak gunakan yang lama)
         let finalLogoUrl = existing[0].store_logo_url;
         if (req.file) {
             finalLogoUrl = `/uploads/${req.file.filename}`;
         }
 
-        /* 3. LOGIKA PERSISTENT STATUS:
-           - Jika status saat ini sudah 'approved', biarkan tetap 'approved'.
-           - Jika statusnya masih 'rejected' atau kosong, barulah set ke 'pending'.
-           - Atau jika Anda ingin tetap auto-pending setiap edit, gunakan kode lama Anda.
-        */
-        const newStatus = existing[0].approval_status === 'approved' ? 'approved' : 'pending';
-        const newActive = existing[0].approval_status === 'approved' ? 1 : 0;
-
+        // 3. Eksekusi Update
         const query = `
             UPDATE stores SET 
-                store_name=?, 
-                identity_number=?, 
-                category=?, 
-                address=?, 
-                latitude=?, 
-                longitude=?, 
-                bank_name=?, 
-                bank_account_number=?, 
-                operating_hours=?, 
-                description=?, 
-                store_logo_url=?,
-                approval_status = ?,
-                is_active = ?
+                store_name=?, identity_number=?, category=?, address=?, 
+                latitude=?, longitude=?, bank_name=?, bank_account_number=?, 
+                operating_hours=?, description=?, store_logo_url=?,
+                approval_status = 'pending',
+                is_active = 0
             WHERE id=?
         `;
 
         await db.query(query, [
-            store_name,
-            identity_number,
-            category,
-            address,
-            latitude,
-            longitude,
-            bank_name,
-            bank_account_number,
-            operating_hours,
-            description,
-            finalLogoUrl,
-            newStatus, // Dinamis: tidak langsung dipaksa pending
-            newActive, // Dinamis: tidak langsung dipaksa non-aktif
-            id
+            store_name, identity_number, category, address,
+            latitude, longitude, bank_name, bank_account_number,
+            operating_hours, description, finalLogoUrl, id
         ]);
 
         res.json({
             success: true,
-            message: newStatus === 'approved' ? "Profil berhasil diperbarui." : "Profil diperbarui, menunggu verifikasi admin.",
-            logo_url: finalLogoUrl,
-            status: newStatus
+            message: "Profil diperbarui, menunggu verifikasi admin.",
+            logo_url: finalLogoUrl
         });
 
     } catch (err) {
