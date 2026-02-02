@@ -4,7 +4,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const serviceController = require('../controllers/serviceController');
-const { authenticateToken, isMitra } = require('../middleware/authMiddleware');
+const { authenticateToken, isMitra } = require('../middlewares/authMiddleware');
 
 // 1. Pastikan folder uploads tersedia
 const uploadDir = 'uploads/services/';
