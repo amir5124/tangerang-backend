@@ -5,6 +5,13 @@ const { sendInvoiceEmail } = require('../utils/emailService');
 const moment = require('moment-timezone');
 
 exports.createPayment = async (req, res) => {
+    // 1. LOG REQUEST MASUK DARI MOBILE
+    console.log("==========================================");
+    console.log("DEBUG: Incoming Request to /create");
+    console.log("Timestamp:", new Date().toISOString());
+    console.log("Body:", JSON.stringify(req.body, null, 2));
+    console.log("==========================================");
+
     const connection = await db.getConnection();
     try {
         await connection.beginTransaction();
@@ -14,17 +21,23 @@ exports.createPayment = async (req, res) => {
             jadwal, lokasi, rincian_biaya, layananTerpilih, catatan, kontak
         } = req.body;
 
+        // Validasi data dasar untuk menghindari error SQL
+        if (!customer_id || !metode_pembayaran) {
+            console.error("DEBUG ERROR: Missing required fields (customer_id or method)");
+            return res.status(400).json({ success: false, message: "Data tidak lengkap" });
+        }
+
         const partner_reff = helpers.generatePartnerReff();
         const isQRIS = metode_pembayaran === 'QRIS';
         const expired = helpers.getExpiredTimestamp(isQRIS ? 30 : 1440);
-        const finalEmail = helpers.isValidEmail(kontak.email) ? kontak.email : process.env.DEFAULT_EMAIL;
+        const finalEmail = helpers.isValidEmail(kontak?.email) ? kontak.email : process.env.DEFAULT_EMAIL;
 
-        // 1. Simpan ke tabel 'orders'
-        // Menggunakan kolom sesuai struktur DESCRIBE orders Anda
+        // 2. SIMPAN KE TABEL ORDERS
         const sqlOrder = `INSERT INTO orders 
             (customer_id, store_id, scheduled_date, scheduled_time, building_type, address_customer, total_price, platform_fee, service_fee, status, customer_notes, items) 
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`;
 
+        console.log("DEBUG: Executing Order Insert...");
         const [orderResult] = await connection.execute(sqlOrder, [
             customer_id, store_id, jadwal.tanggal, jadwal.waktu, jenisGedung,
             lokasi.alamatLengkap, rincian_biaya.subtotal_layanan,
@@ -33,8 +46,9 @@ exports.createPayment = async (req, res) => {
         ]);
 
         const newOrderId = orderResult.insertId;
+        console.log("DEBUG: Order Created ID:", newOrderId);
 
-        // 2. Simpan ke tabel 'order_items'
+        // 3. SIMPAN KE ORDER ITEMS
         const sqlItem = `INSERT INTO order_items (order_id, service_name, qty, price_satuan, subtotal) VALUES (?, ?, ?, ?, ?)`;
         for (const item of layananTerpilih) {
             await connection.execute(sqlItem, [
@@ -42,7 +56,7 @@ exports.createPayment = async (req, res) => {
             ]);
         }
 
-        // 3. Request ke LinkQu Service
+        // 4. REQUEST KE LINKQU (TITIK RAWAN ERROR 403)
         const payload = {
             amount: rincian_biaya.total_akhir,
             partner_reff: partner_reff,
@@ -52,14 +66,18 @@ exports.createPayment = async (req, res) => {
             email: finalEmail
         };
 
+        console.log("DEBUG: Sending Payload to LinkQu Service:", JSON.stringify(payload, null, 2));
+
         const linkquRes = isQRIS ? await linkqu.createQRIS(payload) : await linkqu.createVA(payload);
 
+        console.log("DEBUG: LinkQu Response Raw:", JSON.stringify(linkquRes, null, 2));
+
         if (!linkquRes.data || linkquRes.data.status !== 'SUCCESS') {
-            throw new Error(linkquRes.data.message || "Gagal mendapatkan respon dari LinkQu");
+            console.error("DEBUG ERROR: LinkQu Status Not Success", linkquRes.data);
+            throw new Error(linkquRes.data?.message || "Gagal mendapatkan respon dari LinkQu");
         }
 
-        // 4. Simpan ke tabel 'payments' 
-        // Menggunakan gross_amount, payment_details, dan expired_at
+        // 5. SIMPAN KE PAYMENTS
         const sqlPayment = `INSERT INTO payments 
             (order_id, customer_id, payment_method, transaction_id, gross_amount, payment_status, payment_type, expired_at, payment_details) 
             VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)`;
@@ -67,19 +85,15 @@ exports.createPayment = async (req, res) => {
         const formattedExpired = moment.tz(expired, 'YYYYMMDDHHmmss', 'Asia/Jakarta').format('YYYY-MM-DD HH:mm:ss');
 
         await connection.execute(sqlPayment, [
-            newOrderId,
-            customer_id,
-            metode_pembayaran,
-            partner_reff,
-            rincian_biaya.total_akhir,
-            isQRIS ? 'QRIS' : 'VA',
-            formattedExpired,
-            JSON.stringify(linkquRes.data)
+            newOrderId, customer_id, metode_pembayaran, partner_reff,
+            rincian_biaya.total_akhir, isQRIS ? 'QRIS' : 'VA',
+            formattedExpired, JSON.stringify(linkquRes.data)
         ]);
 
         await connection.commit();
+        console.log("DEBUG: Transaction Committed Successfully");
 
-        res.json({
+        const responseData = {
             success: true,
             order_id: newOrderId,
             payment_data: {
@@ -88,14 +102,25 @@ exports.createPayment = async (req, res) => {
                 expired_at: formattedExpired,
                 amount: rincian_biaya.total_akhir
             }
-        });
+        };
+
+        console.log("DEBUG: Sending JSON Response to App:", JSON.stringify(responseData, null, 2));
+        res.json(responseData);
 
     } catch (err) {
         if (connection) await connection.rollback();
-        console.error("Error Create Payment:", err.message);
-        res.status(500).json({ success: false, message: err.message });
+        console.error("!!! BACKEND CRASH ERROR !!!");
+        console.error("Message:", err.message);
+        console.error("Stack:", err.stack); // Menampilkan baris kode yang error
+        res.status(500).json({
+            success: false,
+            message: "Internal Server Error",
+            debug_message: err.message
+        });
     } finally {
         connection.release();
+        console.log("DEBUG: Connection Released");
+        console.log("==========================================");
     }
 };
 
