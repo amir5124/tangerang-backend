@@ -15,9 +15,10 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// --- Static Folder ---
-// Penting agar gambar dari backend bisa tampil di React Native
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// 2. TAMBAHKAN INI: Paksa express untuk mengenali sub-folder services
+app.use('/uploads/services', express.static(path.join(__dirname, 'uploads/services')));
 
 // --- Route Pengetesan ---
 app.get('/api', (req, res) => {
