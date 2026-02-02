@@ -1,31 +1,42 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
+
+// Import Routes
 const authRoutes = require('./routes/authRoutes');
-const mitraRoutes = require('./routes/mitraRoutes'); // 1. Import rute mitra baru
+const mitraRoutes = require('./routes/mitraRoutes');
+const serviceRoutes = require('./routes/serviceRoutes');
 
 const app = express();
 
-// Middleware
+// --- Middleware ---
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// Route Pengetesan
+// --- Static Folder ---
+// Penting agar gambar dari backend bisa tampil di React Native
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// --- Route Pengetesan ---
 app.get('/api', (req, res) => {
     res.json({
-        message: "Halo dari Node.js! Jalur kabel data sudah benar.",
+        message: "API Tangerang Mandiri Aktif",
         status: "Connected"
     });
 });
 
-// Routes API
-app.use('/api/auth', authRoutes);
-app.use('/api', mitraRoutes); // 2. Daftarkan rute mitra (tanpa /auth karena ini rute publik/manajemen)
+// --- Register Routes ---
+app.use('/api/auth', authRoutes);      // Registrasi & Login
+app.use('/api/mitra', mitraRoutes);    // Manajemen Store/Mitra (Sesuai kode kamu)
+app.use('/api/services', serviceRoutes); // Manajemen Jasa/Produk
 
-// Menjalankan Server
-// Ganti bagian app.listen kamu dengan ini:
+// --- Server Listening ---
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-    // Tips: Cetak IP asli di console agar mudah copy-paste
-    console.log(`Server aktif di: http://192.168.176.251:${PORT}`);
+    console.log(`-------------------------------------------`);
+    console.log(`🚀 Server aktif di: http://localhost:${PORT}`);
+    console.log(`🌐 Akses Network: http://192.168.176.251:${PORT}`);
+    console.log(`-------------------------------------------`);
 });
