@@ -4,8 +4,8 @@ const mitraController = require('../controllers/mitraController');
 const { authenticateToken } = require('../middlewares/authMiddleware');
 
 // --- KELOMPOK 1: PUBLIC / USER ACCESS ---
-router.get('/mitra', mitraController.getAllMitra);
-router.get('/mitra/:id', mitraController.getMitraDetail);
+router.get('/', mitraController.getAllMitra); // Hasilnya: /api/mitra
+router.get('/:id', mitraController.getMitraDetail); // Hasilnya: /api/mitra/:id
 
 // --- KELOMPOK 2: MITRA MANAGEMENT (Auth Required) ---
 

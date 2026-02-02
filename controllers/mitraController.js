@@ -2,9 +2,9 @@ const db = require('../config/db');
 
 // --- EXISTING FUNCTIONS ---
 
+// controllers/mitraController.js
 exports.getAllMitra = async (req, res) => {
-    // Mengambil filter category dari query string (misal: ?category=ac)
-    const { category } = req.query;
+    const { category } = req.query; // Menangkap ?category=ac
 
     let query = `
         SELECT s.*, GROUP_CONCAT(sv.service_name SEPARATOR ', ') as services
@@ -13,21 +13,19 @@ exports.getAllMitra = async (req, res) => {
         WHERE s.is_active = 1
     `;
 
-    const queryParams = [];
+    const params = [];
 
-    // Jika ada category, tambahkan filter ke SQL
     if (category) {
         query += ` AND s.category = ?`;
-        queryParams.push(category);
+        params.push(category);
     }
 
     query += ` GROUP BY s.id`;
 
     try {
-        const [results] = await db.query(query, queryParams);
+        const [results] = await db.query(query, params);
         res.json(results);
     } catch (err) {
-        console.error("Error getAllMitra:", err.message);
         res.status(500).json({ error: err.message });
     }
 };
