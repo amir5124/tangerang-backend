@@ -63,7 +63,9 @@ exports.createPayment = async (req, res) => {
             expired: expired,
             method: metode_pembayaran,
             nama: kontak.nama,
-            email: finalEmail
+            email: finalEmail,
+            customer_id: customer_id, // Pastikan ini ada
+            wa: kontak.nomorWhatsApp
         };
 
         console.log("DEBUG: Sending Payload to LinkQu Service:", JSON.stringify(payload, null, 2));
