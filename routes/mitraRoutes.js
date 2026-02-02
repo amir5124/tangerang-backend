@@ -1,26 +1,26 @@
 const express = require('express');
 const router = express.Router();
 const mitraController = require('../controllers/mitraController');
-const storeController = require('../controllers/storeController');
 const { authenticateToken } = require('../middlewares/authMiddleware');
 
 // --- KELOMPOK 1: PUBLIC / USER ACCESS ---
-// Untuk aplikasi Customer melihat daftar vendor/mitra
 router.get('/mitra', mitraController.getAllMitra);
 router.get('/mitra/:id', mitraController.getMitraDetail);
 
-
 // --- KELOMPOK 2: MITRA MANAGEMENT (Auth Required) ---
-// Route untuk melengkapi profil pertama kali (Setelah register akun)
-router.put('/mitra/complete-profile', authenticateToken, storeController.completeMitraProfile);
 
-// Route untuk update profil toko (perubahan data berkala)
-router.put('/mitra/profile/:id', authenticateToken, storeController.updateStoreProfile);
+// AMBIL DATA PROFIL (Agar Form di React Native bisa tampilkan data lama)
+router.get('/profile/:id', authenticateToken, mitraController.getStoreProfile);
+
+// UPDATE PROFIL (Untuk Edit Profile & Lengkapi Profile)
+router.put('/profile/:id', authenticateToken, mitraController.updateStoreProfile);
+
+// (Opsional) Jika Anda masih ingin memakai path ini untuk pendaftaran pertama
+router.put('/complete-profile', authenticateToken, mitraController.updateStoreProfile);
 
 
 // --- KELOMPOK 3: ADMIN/MAINTENANCE ---
-// Update umum (is_active, dll) dan Delete
-router.put('/mitra/manage/:id', authenticateToken, mitraController.updateMitra);
-router.delete('/mitra/:id', authenticateToken, mitraController.deleteMitra);
+router.put('/manage/:id', authenticateToken, mitraController.updateMitra);
+router.delete('/:id', authenticateToken, mitraController.deleteMitra);
 
 module.exports = router;

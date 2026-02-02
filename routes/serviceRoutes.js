@@ -6,79 +6,40 @@ const fs = require('fs');
 const serviceController = require('../controllers/serviceController');
 const { authenticateToken, isMitra } = require('../middlewares/authMiddleware');
 
-// 1. Pastikan folder uploads tersedia
+// 1. Setup Folder
 const uploadDir = 'uploads/services/';
-if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
-}
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-// 2. Konfigurasi Storage Multer
+// 2. Multer Config
 const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, uploadDir);
-    },
+    destination: (req, file, cb) => cb(null, uploadDir),
     filename: (req, file, cb) => {
         const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, uniqueSuffix + path.extname(file.originalname));
+        cb(null, 'service-' + uniqueSuffix + path.extname(file.originalname));
     }
 });
-
-// 3. Filter tipe file (hanya gambar)
-const fileFilter = (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) {
-        cb(null, true);
-    } else {
-        cb(new Error('Hanya file gambar yang diizinkan!'), false);
-    }
-};
 
 const upload = multer({
-    storage: storage,
-    fileFilter: fileFilter,
-    limits: { fileSize: 2 * 1024 * 1024 } // Batas 2MB
+    storage,
+    limits: { fileSize: 2 * 1024 * 1024 }, // 2MB
+    fileFilter: (req, file, cb) => {
+        if (file.mimetype.startsWith('image/')) cb(null, true);
+        else cb(new Error('Hanya gambar yang diizinkan!'), false);
+    }
 });
 
-// --- 4. Routes ---
+// --- 3. Routes ---
 
-/**
- * @route   POST /api/services
- * @desc    Tambah jasa baru (Hanya Mitra)
- */
-router.post(
-    '/',
-    authenticateToken,
-    isMitra,
-    upload.single('image'),
-    serviceController.createService
-);
-
-/**
- * @route   GET /api/services/store/:store_id
- * @desc    Ambil daftar jasa berdasarkan ID Toko (Public/Customer bisa lihat)
- */
+// Publik: Lihat jasa toko
 router.get('/store/:store_id', serviceController.getServicesByStore);
 
-/**
- * @route   PUT /api/services/:id
- * @desc    Update data jasa (Hanya Mitra)
- */
-router.put(
-    '/:id',
-    authenticateToken,
-    isMitra,
-    upload.single('image'),
-    serviceController.updateService
-);
+// Khusus Mitra: Tambah Jasa
+router.post('/', authenticateToken, isMitra, upload.single('image'), serviceController.createService);
 
-/**
- * @route   DELETE /api/services/:id
- * @desc    Hapus jasa (Hanya Mitra)
- */
-router.delete(
-    '/:id',
-    authenticateToken,
-    isMitra,
-    serviceController.deleteService
-);
+// Khusus Mitra: Edit Jasa (Mendukung ganti gambar)
+router.put('/:id', authenticateToken, isMitra, upload.single('image'), serviceController.updateService);
+
+// Khusus Mitra: Hapus Jasa
+router.delete('/:id', authenticateToken, isMitra, serviceController.deleteService);
 
 module.exports = router;
