@@ -25,16 +25,39 @@ exports.register = async (req, res) => {
         );
 
         const userId = userResult.insertId;
+        let storeId = null;
 
         // --- MODIFIKASI UNTUK MITRA ---
-        // Di dalam blok if (role === 'mitra')
-        await db.query(
-            `INSERT INTO stores (user_id, store_name, category, address, latitude, longitude, approval_status, is_active) 
-     VALUES (?, ?, ?, ?, 0, 0, 'pending', 0)`,
-            [userId, `${full_name} Service`, 'ac', 'Alamat belum diatur']
+        if (role === 'mitra') {
+            const [storeResult] = await db.query(
+                `INSERT INTO stores (user_id, store_name, category, address, latitude, longitude, approval_status, is_active) 
+                 VALUES (?, ?, ?, ?, 0, 0, 'pending', 0)`,
+                [userId, `${full_name} Service`, 'ac', 'Alamat belum diatur']
+            );
+            storeId = storeResult.insertId; // Ambil ID toko yang baru dibuat
+        }
+
+        // --- BUAT TOKEN JWT AGAR FRONTEND BISA LANGSUNG LOGIN ---
+        const token = jwt.sign(
+            { id: userId, role: role },
+            JWT_SECRET,
+            { expiresIn: '30d' }
         );
 
-        res.status(201).json({ message: "Registrasi berhasil. Silakan login.", userId });
+        // --- KIRIM RESPONSE LENGKAP (Sesuai kebutuhan Frontend) ---
+        res.status(201).json({
+            message: "Registrasi berhasil",
+            token, // Token JWT (Kunci akses)
+            user: {
+                id: userId,
+                full_name,
+                role,
+                phone_number,
+                store_id: storeId, // Store ID untuk Dashboard Mitra
+                is_active: 0 // Default belum aktif
+            }
+        });
+
     } catch (error) {
         console.error("❌ Register Error:", error.message);
         res.status(500).json({ message: "Gagal menyimpan data", error: error.message });
