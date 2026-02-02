@@ -1,8 +1,7 @@
-// controllers/storeController.js
 const db = require('../config/db');
 
 exports.updateStoreProfile = async (req, res) => {
-    const { id } = req.params; // Ini adalah store_id
+    const { id } = req.params; // store_id dari URL params
     const {
         identity_number,
         store_name,
@@ -11,10 +10,18 @@ exports.updateStoreProfile = async (req, res) => {
         latitude,
         longitude,
         bank_name,
-        bank_account_number
+        bank_account_number,
+        operating_hours // <--- Tambahan field baru
     } = req.body;
 
     try {
+        // 1. Cek apakah store dengan ID tersebut ada
+        const [existing] = await db.query('SELECT id FROM stores WHERE id = ?', [id]);
+        if (existing.length === 0) {
+            return res.status(404).json({ message: "Data toko tidak ditemukan." });
+        }
+
+        // 2. Query Update Lengkap
         const query = `
             UPDATE stores SET 
                 identity_number = ?, 
@@ -25,39 +32,41 @@ exports.updateStoreProfile = async (req, res) => {
                 longitude = ?, 
                 bank_name = ?, 
                 bank_account_number = ?,
-                approval_status = 'pending' 
+                operating_hours = ?,
+                approval_status = 'pending',
+                is_active = 0
             WHERE id = ?
         `;
 
         await db.query(query, [
-            identity_number, store_name, category, address,
-            latitude, longitude, bank_name, bank_account_number, id
+            identity_number,
+            store_name,
+            category,
+            address,
+            latitude,
+            longitude,
+            bank_name,
+            bank_account_number,
+            operating_hours, // Simpan jam operasional
+            id
         ]);
 
-        res.json({ message: "Profil berhasil dikirim, menunggu verifikasi admin." });
+        res.json({
+            message: "Profil berhasil dikirim, menunggu verifikasi admin.",
+            success: true
+        });
+
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error("❌ [Backend Error]:", err.message);
+        res.status(500).json({
+            message: "Gagal memperbarui profil toko",
+            error: err.message
+        });
     }
 };
 
+// Fungsi ini bisa tetap ada sebagai alias atau dihapus jika route sudah diarahkan ke updateStoreProfile
 exports.completeMitraProfile = async (req, res) => {
-    const { store_id, identity_number, category, address, latitude, longitude } = req.body;
-
-    try {
-        const query = `
-            UPDATE stores SET 
-                identity_number = ?, 
-                category = ?, 
-                address = ?, 
-                latitude = ?, 
-                longitude = ?, 
-                approval_status = 'pending' 
-            WHERE id = ?`;
-
-        await db.query(query, [identity_number, category, address, latitude, longitude, store_id]);
-
-        res.json({ message: "Profil berhasil dilengkapi. Silakan tunggu verifikasi admin." });
-    } catch (err) {
-        res.status(500).json({ error: "Gagal update profil: " + err.message });
-    }
+    // Memanggil fungsi di atas agar logika tetap satu pintu
+    return exports.updateStoreProfile(req, res);
 };
