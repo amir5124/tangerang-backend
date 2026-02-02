@@ -48,39 +48,25 @@ exports.getServicesByStore = async (req, res) => {
 // 3. EDIT / UPDATE JASA
 exports.updateService = async (req, res) => {
     const { id } = req.params;
+    // Pastikan mengambil 'price' dari req.body (sesuai kiriman frontend)
     const { service_name, price, price_type, description } = req.body;
 
     try {
-        // Ambil data lama untuk cek foto lama jika ada upload baru
-        const [oldData] = await db.query("SELECT image_url FROM services WHERE id = ?", [id]);
-
         let query = `UPDATE services SET service_name=?, base_price=?, price_type=?, description=?`;
-        let params = [service_name, price, price_type || 'fixed', description];
+        let params = [service_name, price, price_type, description];
 
         if (req.file) {
-            const new_image_url = `/uploads/services/${req.file.filename}`;
+            const image_url = `/uploads/services/${req.file.filename}`;
             query += `, image_url=?`;
-            params.push(new_image_url);
-
-            // (Opsional) Hapus file fisik lama jika ada
-            if (oldData[0]?.image_url) {
-                const oldPath = path.join(__dirname, '..', oldData[0].image_url);
-                if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
-            }
+            params.push(image_url);
         }
 
         query += ` WHERE id=?`;
         params.push(id);
 
-        const [result] = await db.query(query, params);
-
-        if (result.affectedRows === 0) {
-            return res.status(404).json({ message: "Jasa tidak ditemukan" });
-        }
-
-        res.json({ message: "Jasa berhasil diperbarui" });
+        await db.query(query, params);
+        res.json({ message: "Update berhasil" });
     } catch (err) {
-        console.error(">>> [Error] updateService:", err.message);
         res.status(500).json({ error: err.message });
     }
 };
