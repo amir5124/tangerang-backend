@@ -5,13 +5,12 @@ const path = require('path');
 const mitraController = require('../controllers/mitraController');
 const { authenticateToken } = require('../middlewares/authMiddleware');
 
-// --- Konfigurasi Multer untuk Foto Toko ---
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
-        cb(null, 'uploads/'); // Pastikan folder 'uploads' ada di root VPS
+        // Arahkan ke sub-folder services
+        cb(null, 'uploads/services/');
     },
     filename: (req, file, cb) => {
-        // Format: logo-1706850000.jpg
         cb(null, `logo-${Date.now()}${path.extname(file.originalname)}`);
     }
 });
