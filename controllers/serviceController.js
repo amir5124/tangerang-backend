@@ -65,3 +65,25 @@ exports.updateService = async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 };
+
+// 4. Hapus Jasa
+exports.deleteService = async (req, res) => {
+    const { id } = req.params;
+    console.log(`>>> [DELETE] Request hapus jasa ID: ${id}`);
+
+    const query = "DELETE FROM services WHERE id = ?";
+
+    try {
+        const [result] = await db.query(query, [id]);
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ message: "Jasa tidak ditemukan" });
+        }
+
+        console.log(">>> [DB Success] Jasa berhasil dihapus");
+        res.json({ message: "Jasa berhasil dihapus" });
+    } catch (err) {
+        console.error(">>> [DB Error] deleteService:", err.message);
+        res.status(500).json({ error: err.message });
+    }
+};
