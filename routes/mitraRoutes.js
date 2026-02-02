@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const mitraController = require('../controllers/mitraController');
 const storeController = require('../controllers/storeController');
-const { authenticateToken } = require('../middleware/authMiddleware');
+const { authenticateToken } = require('../middlewares/authMiddleware');
 
 // --- KELOMPOK 1: PUBLIC / USER ACCESS ---
 // Untuk aplikasi Customer melihat daftar vendor/mitra
