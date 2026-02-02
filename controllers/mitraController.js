@@ -3,17 +3,31 @@ const db = require('../config/db');
 // --- EXISTING FUNCTIONS ---
 
 exports.getAllMitra = async (req, res) => {
-    const query = `
+    // Mengambil filter category dari query string (misal: ?category=ac)
+    const { category } = req.query;
+
+    let query = `
         SELECT s.*, GROUP_CONCAT(sv.service_name SEPARATOR ', ') as services
         FROM stores s
         LEFT JOIN services sv ON s.id = sv.store_id
         WHERE s.is_active = 1
-        GROUP BY s.id
     `;
+
+    const queryParams = [];
+
+    // Jika ada category, tambahkan filter ke SQL
+    if (category) {
+        query += ` AND s.category = ?`;
+        queryParams.push(category);
+    }
+
+    query += ` GROUP BY s.id`;
+
     try {
-        const [results] = await db.query(query);
+        const [results] = await db.query(query, queryParams);
         res.json(results);
     } catch (err) {
+        console.error("Error getAllMitra:", err.message);
         res.status(500).json({ error: err.message });
     }
 };
