@@ -1,7 +1,7 @@
 const db = require('../config/db');
 
 exports.updateStoreProfile = async (req, res) => {
-    const { id } = req.params; // store_id dari URL params
+    const { id } = req.params;
     const {
         identity_number,
         store_name,
@@ -11,22 +11,25 @@ exports.updateStoreProfile = async (req, res) => {
         longitude,
         bank_name,
         bank_account_number,
-        operating_hours // <--- Tambahan field baru
+        operating_hours,
+        description,      // <--- Tambahkan ini
+        store_logo_url    // <--- Tambahkan ini
     } = req.body;
 
     try {
-        // 1. Cek apakah store dengan ID tersebut ada
         const [existing] = await db.query('SELECT id FROM stores WHERE id = ?', [id]);
         if (existing.length === 0) {
             return res.status(404).json({ message: "Data toko tidak ditemukan." });
         }
 
-        // 2. Query Update Lengkap
+        // Update Query dengan tambahan description dan store_logo_url
         const query = `
             UPDATE stores SET 
                 identity_number = ?, 
                 store_name = ?, 
                 category = ?, 
+                description = ?, 
+                store_logo_url = ?, 
                 address = ?, 
                 latitude = ?, 
                 longitude = ?, 
@@ -42,12 +45,14 @@ exports.updateStoreProfile = async (req, res) => {
             identity_number,
             store_name,
             category,
+            description,      // Bind value deskripsi
+            store_logo_url,    // Bind value logo
             address,
             latitude,
             longitude,
             bank_name,
             bank_account_number,
-            operating_hours, // Simpan jam operasional
+            operating_hours,
             id
         ]);
 
