@@ -70,7 +70,7 @@ exports.createPayment = async (req, res) => {
 
         const linkquRes = isQRIS ? await linkqu.createQRIS(payload) : await linkqu.createVA(payload);
 
-        console.log("DEBUG: LinkQu Response Raw:", JSON.stringify(linkquRes, null, 2));
+        console.log("DEBUG: LinkQu Response Data:", JSON.stringify(linkquRes.data, null, 2));
 
         if (!linkquRes.data || linkquRes.data.status !== 'SUCCESS') {
             console.error("DEBUG ERROR: LinkQu Status Not Success", linkquRes.data);
