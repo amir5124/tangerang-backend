@@ -7,6 +7,8 @@ const path = require('path');
 const authRoutes = require('./routes/authRoutes');
 const mitraRoutes = require('./routes/mitraRoutes');
 const serviceRoutes = require('./routes/serviceRoutes');
+const orderRoutes = require('./routes/orderRoutes');
+const paymentRoutes = require('./routes/paymentRoutes');
 
 const app = express();
 
@@ -32,6 +34,8 @@ app.get('/api', (req, res) => {
 app.use('/api/auth', authRoutes);      // Registrasi & Login
 app.use('/api/mitra', mitraRoutes);    // Manajemen Store/Mitra (Sesuai kode kamu)
 app.use('/api/services', serviceRoutes); // Manajemen Jasa/Produk
+app.use('/api/orders', orderRoutes);
+app.use('/api/payment', paymentRoutes);
 
 // --- Server Listening ---
 const PORT = process.env.PORT || 3000;
