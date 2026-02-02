@@ -1,25 +1,39 @@
 const express = require('express');
 const router = express.Router();
+const multer = require('multer');
+const path = require('path');
 const mitraController = require('../controllers/mitraController');
 const { authenticateToken } = require('../middlewares/authMiddleware');
 
-// --- KELOMPOK 1: PUBLIC / USER ACCESS ---
-router.get('/', mitraController.getAllMitra); // Hasilnya: /api/mitra
-router.get('/:id', mitraController.getMitraDetail); // Hasilnya: /api/mitra/:id
+// --- Konfigurasi Multer untuk Foto Toko ---
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, 'uploads/'); // Pastikan folder 'uploads' ada di root VPS
+    },
+    filename: (req, file, cb) => {
+        // Format: logo-1706850000.jpg
+        cb(null, `logo-${Date.now()}${path.extname(file.originalname)}`);
+    }
+});
 
-// --- KELOMPOK 2: MITRA MANAGEMENT (Auth Required) ---
+const upload = multer({
+    storage: storage,
+    limits: { fileSize: 5 * 1024 * 1024 } // Batas 5MB agar tidak berat
+});
 
-// AMBIL DATA PROFIL (Agar Form di React Native bisa tampilkan data lama)
+// --- KELOMPOK 1: PUBLIC ---
+router.get('/', mitraController.getAllMitra);
+router.get('/:id', mitraController.getMitraDetail);
+
+// --- KELOMPOK 2: MITRA MANAGEMENT ---
+
+// Ambil Profil
 router.get('/profile/:id', authenticateToken, mitraController.getStoreProfile);
 
-// UPDATE PROFIL (Untuk Edit Profile & Lengkapi Profile)
-router.put('/profile/:id', authenticateToken, mitraController.updateStoreProfile);
+// Update Profil (Menggunakan upload.single('image') untuk menangkap foto)
+router.put('/profile/:id', authenticateToken, upload.single('image'), mitraController.updateStoreProfile);
 
-// (Opsional) Jika Anda masih ingin memakai path ini untuk pendaftaran pertama
-router.put('/complete-profile', authenticateToken, mitraController.updateStoreProfile);
-
-
-// --- KELOMPOK 3: ADMIN/MAINTENANCE ---
+// --- KELOMPOK 3: ADMIN ---
 router.put('/manage/:id', authenticateToken, mitraController.updateMitra);
 router.delete('/:id', authenticateToken, mitraController.deleteMitra);
 

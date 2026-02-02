@@ -61,28 +61,50 @@ exports.getStoreProfile = async (req, res) => {
 // 2. Fungsi Update Profil Lengkap (Dipanggil oleh form React Native)
 exports.updateStoreProfile = async (req, res) => {
     const { id } = req.params;
+
+    // Data teks otomatis masuk ke req.body karena sudah diproses multer/express.json
     const {
         store_name, identity_number, category, address,
         latitude, longitude, bank_name, bank_account_number,
         operating_hours, description
     } = req.body;
 
-    const query = `
-        UPDATE stores SET 
-            store_name=?, identity_number=?, category=?, address=?, 
-            latitude=?, longitude=?, bank_name=?, bank_account_number=?, 
-            operating_hours=?, description=?
-        WHERE id=?
-    `;
-
     try {
+        // 1. Cek apakah mitra ada & ambil data lama (untuk mempertahankan logo jika tidak ganti foto)
+        const [existing] = await db.query("SELECT store_logo_url FROM stores WHERE id = ?", [id]);
+        if (existing.length === 0) return res.status(404).json({ message: "Mitra tidak ditemukan" });
+
+        // 2. Tentukan logo_url (Gunakan file baru jika ada, jika tidak gunakan yang lama)
+        let finalLogoUrl = existing[0].store_logo_url;
+        if (req.file) {
+            finalLogoUrl = `/uploads/${req.file.filename}`;
+        }
+
+        // 3. Eksekusi Update
+        const query = `
+            UPDATE stores SET 
+                store_name=?, identity_number=?, category=?, address=?, 
+                latitude=?, longitude=?, bank_name=?, bank_account_number=?, 
+                operating_hours=?, description=?, store_logo_url=?,
+                approval_status = 'pending',
+                is_active = 0
+            WHERE id=?
+        `;
+
         await db.query(query, [
             store_name, identity_number, category, address,
             latitude, longitude, bank_name, bank_account_number,
-            operating_hours, description, id
+            operating_hours, description, finalLogoUrl, id
         ]);
-        res.json({ message: "Profil berhasil diperbarui" });
+
+        res.json({
+            success: true,
+            message: "Profil diperbarui, menunggu verifikasi admin.",
+            logo_url: finalLogoUrl
+        });
+
     } catch (err) {
+        console.error("❌ [Update Error]:", err.message);
         res.status(500).json({ error: err.message });
     }
 };
