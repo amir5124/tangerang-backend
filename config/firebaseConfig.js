@@ -1,28 +1,35 @@
 const admin = require('firebase-admin');
 
 try {
-    // 1. Ambil string rahasia dari file .env
-    const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT;
+    const rawData = process.env.FIREBASE_SERVICE_ACCOUNT;
 
-    if (serviceAccountRaw) {
-        // 2. Ubah string tersebut menjadi format Object/JSON agar bisa dibaca Firebase
-        const serviceAccount = JSON.parse(serviceAccountRaw);
+    if (rawData) {
+        let serviceAccount;
+        const trimmedData = rawData.trim();
 
-        // 3. Jalankan inisialisasi hanya jika belum ada app yang aktif
+        // Cek apakah data adalah JSON biasa (diawali {) atau Base64
+        if (trimmedData.startsWith('{')) {
+            // Jika JSON biasa
+            serviceAccount = JSON.parse(trimmedData);
+        } else {
+            // Jika Base64 (seperti yang Anda masukkan di Coolify sekarang)
+            console.log("📦 Mendeteksi format Base64, mencoba melakukan decoding...");
+            const decodedData = Buffer.from(trimmedData, 'base64').toString('utf-8');
+            serviceAccount = JSON.parse(decodedData);
+        }
+
         if (!admin.apps.length) {
             admin.initializeApp({
                 credential: admin.credential.cert(serviceAccount)
             });
-            console.log("✅ Firebase Admin SDK Initialized Successfully via ENV");
+            console.log("✅ Firebase Admin SDK Initialized Successfully!");
         }
     } else {
-        // Jika variabel di .env tidak ditemukan
-        throw new Error("Variabel FIREBASE_SERVICE_ACCOUNT tidak ditemukan di .env");
+        console.warn("⚠️ Warning: FIREBASE_SERVICE_ACCOUNT tidak ditemukan di Environment Variables.");
     }
 } catch (error) {
     console.error("❌ Firebase Admin Initialization Error:");
     console.error("Detail:", error.message);
-    console.log("⚠️ Tips: Pastikan isi FIREBASE_SERVICE_ACCOUNT di .env sudah benar dan menggunakan kutip tunggal di awal & akhir.");
 }
 
 module.exports = admin;
