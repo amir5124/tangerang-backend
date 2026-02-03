@@ -4,16 +4,20 @@ const cors = require('cors');
 const path = require('path');
 const admin = require('firebase-admin');
 
-// --- 1. INISIALISASI FIREBASE ADMIN ---
-// Pastikan file serviceAccountKey.json ada di folder 'config' atau root
+// --- 1. INISIALISASI FIREBASE ADMIN (Via Environment Variable) ---
 try {
-    const serviceAccount = require('./serviceAccountKey.json');
+    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+        // Mengubah string JSON dari .env menjadi Object
+        const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 
-    if (!admin.apps.length) {
-        admin.initializeApp({
-            credential: admin.credential.cert(serviceAccount)
-        });
-        console.log("✅ Firebase Admin Berhasil Diinisialisasi");
+        if (!admin.apps.length) {
+            admin.initializeApp({
+                credential: admin.credential.cert(serviceAccount)
+            });
+            console.log("✅ Firebase Admin Berhasil Diinisialisasi dari ENV");
+        }
+    } else {
+        console.warn("⚠️ Warning: FIREBASE_SERVICE_ACCOUNT tidak ditemukan di .env");
     }
 } catch (error) {
     console.error("❌ Gagal inisialisasi Firebase Admin:", error.message);
@@ -38,7 +42,7 @@ const allowedOrigins = [
 
 app.use(cors({
     origin: function (origin, callback) {
-        // Izinkan request tanpa origin (seperti Mobile App atau Postman)
+        // Izinkan request tanpa origin (seperti Mobile App, Postman, atau Fetch dari App Native)
         if (!origin || allowedOrigins.indexOf(origin) !== -1) {
             callback(null, true);
         } else {
@@ -47,7 +51,8 @@ app.use(cors({
         }
     },
     methods: 'GET,POST,PUT,DELETE,OPTIONS',
-    allowedHeaders: 'Content-Type,Authorization'
+    allowedHeaders: 'Content-Type,Authorization',
+    credentials: true
 }));
 
 app.use(express.json());
@@ -78,7 +83,6 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`-------------------------------------------`);
     console.log(`🚀 Server aktif di: http://localhost:${PORT}`);
-    console.log(`🌐 Akses Network: http://192.168.176.251:${PORT}`);
     console.log(`📡 Firebase Status: ${admin.apps.length > 0 ? '🟢 Online' : '🔴 Offline'}`);
     console.log(`-------------------------------------------`);
 });
