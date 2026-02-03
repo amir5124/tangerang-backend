@@ -7,7 +7,7 @@ const admin = require('firebase-admin');
 // --- 1. INISIALISASI FIREBASE ADMIN ---
 // Pastikan file serviceAccountKey.json ada di folder 'config' atau root
 try {
-    const serviceAccount = require('./config/serviceAccountKey.json');
+    const serviceAccount = require('./serviceAccountKey.json');
 
     if (!admin.apps.length) {
         admin.initializeApp({
