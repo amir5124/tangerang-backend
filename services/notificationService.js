@@ -1,5 +1,5 @@
 // services/notificationService.js
-const admin = require('../config/firebaseConfig');
+const admin = process.env.FIREBASE_SERVICE_ACCOUNT;
 
 exports.sendPushNotification = async (targetToken, title, body, data = {}) => {
     if (!targetToken) {

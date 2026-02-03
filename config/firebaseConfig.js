@@ -1,31 +1,28 @@
-// config/firebaseConfig.js
 const admin = require('firebase-admin');
-const path = require('path');
-
-/**
- * Menggunakan path.join dan process.cwd() untuk memastikan 
- * lokasi file serviceAccountKey.json selalu mengacu pada root folder.
- */
-const serviceAccountPath = path.join(process.cwd(), 'serviceAccountKey.json');
 
 try {
-    // Memuat file JSON dari path absolut
-    const serviceAccount = require(serviceAccountPath);
+    // 1. Ambil string rahasia dari file .env
+    const serviceAccountRaw = process.env.FIREBASE_SERVICE_ACCOUNT;
 
-    admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount)
-    });
+    if (serviceAccountRaw) {
+        // 2. Ubah string tersebut menjadi format Object/JSON agar bisa dibaca Firebase
+        const serviceAccount = JSON.parse(serviceAccountRaw);
 
-    console.log("✅ Firebase Admin SDK Initialized Successfully");
+        // 3. Jalankan inisialisasi hanya jika belum ada app yang aktif
+        if (!admin.apps.length) {
+            admin.initializeApp({
+                credential: admin.credential.cert(serviceAccount)
+            });
+            console.log("✅ Firebase Admin SDK Initialized Successfully via ENV");
+        }
+    } else {
+        // Jika variabel di .env tidak ditemukan
+        throw new Error("Variabel FIREBASE_SERVICE_ACCOUNT tidak ditemukan di .env");
+    }
 } catch (error) {
     console.error("❌ Firebase Admin Initialization Error:");
-    console.error("Searched Path:", serviceAccountPath);
-    console.error("Error Detail:", error.message);
-
-    // Memberikan petunjuk jika file tidak ditemukan
-    if (error.code === 'MODULE_NOT_FOUND') {
-        console.error("Tips: Pastikan file serviceAccountKey.json ada di root folder aplikasi Anda.");
-    }
+    console.error("Detail:", error.message);
+    console.log("⚠️ Tips: Pastikan isi FIREBASE_SERVICE_ACCOUNT di .env sudah benar dan menggunakan kutip tunggal di awal & akhir.");
 }
 
 module.exports = admin;
