@@ -2,6 +2,7 @@ const db = require('../config/db');
 const linkqu = require('../services/linkquService');
 const helpers = require('../utils/helpers');
 const { sendInvoiceEmail } = require('../utils/emailService');
+const { sendPushNotification } = require('../services/notificationService'); // Tambahkan ini
 const moment = require('moment-timezone');
 
 exports.createPayment = async (req, res) => {
@@ -56,7 +57,7 @@ exports.createPayment = async (req, res) => {
             ]);
         }
 
-        // 4. REQUEST KE LINKQU (TITIK RAWAN ERROR 403)
+        // 4. REQUEST KE LINKQU
         const payload = {
             amount: rincian_biaya.total_akhir,
             partner_reff: partner_reff,
@@ -64,7 +65,7 @@ exports.createPayment = async (req, res) => {
             method: metode_pembayaran,
             nama: kontak.nama,
             email: finalEmail,
-            customer_id: customer_id, // Pastikan ini ada
+            customer_id: customer_id,
             wa: kontak.nomorWhatsApp
         };
 
@@ -102,27 +103,19 @@ exports.createPayment = async (req, res) => {
                 va_number: linkquRes.data.virtual_account || null,
                 qris_url: linkquRes.data.imageqris || null,
                 expired_at: formattedExpired,
-                amount: rincian_biaya.total_akhir
+                amount: rincian_biaya.total_akhir,
+                partner_reff: partner_reff // Dibutuhkan frontend untuk polling
             }
         };
 
-        console.log("DEBUG: Sending JSON Response to App:", JSON.stringify(responseData, null, 2));
         res.json(responseData);
 
     } catch (err) {
         if (connection) await connection.rollback();
-        console.error("!!! BACKEND CRASH ERROR !!!");
-        console.error("Message:", err.message);
-        console.error("Stack:", err.stack); // Menampilkan baris kode yang error
-        res.status(500).json({
-            success: false,
-            message: "Internal Server Error",
-            debug_message: err.message
-        });
+        console.error("!!! BACKEND CRASH ERROR !!!", err.message);
+        res.status(500).json({ success: false, message: "Internal Server Error", debug_message: err.message });
     } finally {
         connection.release();
-        console.log("DEBUG: Connection Released");
-        console.log("==========================================");
     }
 };
 
@@ -134,15 +127,17 @@ exports.handleCallback = async (req, res) => {
         if (status === 'SUCCESS' || status === 'SETTLED') {
             await connection.beginTransaction();
 
-            // SINKRONISASI KOLOM: address_customer, scheduled_date, customer_notes, phone_number
+            // Query diperluas untuk mengambil fcm_token Mitra (store_id)
             const [rows] = await connection.execute(
                 `SELECT 
                     o.id AS order_id, o.items, o.building_type, o.scheduled_date, 
                     o.scheduled_time, o.address_customer, o.customer_notes, o.total_price,
-                    u.full_name, u.email, u.phone_number
+                    u.full_name AS customer_name, u.email AS customer_email, u.phone_number,
+                    m.fcm_token AS mitra_fcm, m.full_name AS mitra_name
                  FROM payments p
                  JOIN orders o ON p.order_id = o.id
                  JOIN users u ON o.customer_id = u.id
+                 LEFT JOIN users m ON o.store_id = m.id
                  WHERE p.transaction_id = ? AND p.payment_status = 'pending'`,
                 [partner_reff]
             );
@@ -150,27 +145,28 @@ exports.handleCallback = async (req, res) => {
             if (rows.length > 0) {
                 const order = rows[0];
 
-                // Update status transaksi
-                await connection.execute(
-                    "UPDATE payments SET payment_status = 'settlement', transaction_time = NOW() WHERE transaction_id = ?",
-                    [partner_reff]
-                );
-                await connection.execute(
-                    "UPDATE orders SET status = 'accepted' WHERE id = ?",
-                    [order.order_id]
-                );
-                await connection.execute(
-                    "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'accepted', 'Pembayaran berhasil dikonfirmasi via LinkQu')",
-                    [order.order_id]
-                );
+                // Update status transaksi & Order
+                await connection.execute("UPDATE payments SET payment_status = 'settlement', transaction_time = NOW() WHERE transaction_id = ?", [partner_reff]);
+                await connection.execute("UPDATE orders SET status = 'accepted' WHERE id = ?", [order.order_id]);
+                await connection.execute("INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'accepted', 'Pembayaran berhasil dikonfirmasi via LinkQu Callback')", [order.order_id]);
 
                 await connection.commit();
 
-                // Parsing Items dan Kirim Email
+                // 1. KIRIM NOTIFIKASI KE MITRA
+                if (order.mitra_fcm) {
+                    await sendPushNotification(
+                        order.mitra_fcm,
+                        "💰 Pesanan Baru Masuk!",
+                        `Halo ${order.mitra_name}, pembayaran Order #${order.order_id} sebesar Rp ${parseInt(amount).toLocaleString('id-ID')} telah diterima.`,
+                        { orderId: String(order.order_id), type: "NEW_ORDER" }
+                    );
+                }
+
+                // 2. KIRIM INVOICE EMAIL
                 const layananTerpilih = typeof order.items === 'string' ? JSON.parse(order.items) : order.items;
                 const emailPayload = {
                     orderId: order.order_id,
-                    customer: { nama: order.full_name, email: order.email, wa: order.phone_number },
+                    customer: { nama: order.customer_name, email: order.customer_email, wa: order.phone_number },
                     layanan: layananTerpilih,
                     properti: {
                         jenisGedung: order.building_type,
@@ -178,17 +174,13 @@ exports.handleCallback = async (req, res) => {
                         alamat: order.address_customer,
                         catatan: order.customer_notes || "-"
                     },
-                    pembayaran: {
-                        total: `Rp${parseInt(amount).toLocaleString('id-ID')}`,
-                        metode: "LinkQu Payment",
-                        reff: partner_reff
-                    }
+                    pembayaran: { total: `Rp${parseInt(amount).toLocaleString('id-ID')}`, metode: "LinkQu Payment", reff: partner_reff }
                 };
 
-                await sendInvoiceEmail(order.email, emailPayload, false);
+                await sendInvoiceEmail(order.customer_email, emailPayload, false);
                 await sendInvoiceEmail(process.env.DEFAULT_EMAIL, { ...emailPayload, isAdmin: true }, true);
 
-                console.log(`✅ Success: Order #${order.order_id} Paid.`);
+                console.log(`✅ Webhook: Order #${order.order_id} processed.`);
             }
         }
         res.status(200).send("OK");
@@ -206,51 +198,46 @@ exports.checkPaymentStatus = async (req, res) => {
     const connection = await db.getConnection();
 
     try {
-        // 1. Panggil Service LinkQu
         const linkquStatus = await linkqu.checkStatus(partnerReff);
 
-        // 2. Jika Status Sukses di LinkQu, Sinkronkan ke Database kita
         if (linkquStatus.status === 'SUCCESS' || linkquStatus.status === 'SETTLED') {
             await connection.beginTransaction();
 
-            // Cek status saat ini di database
-            const [currentStatus] = await connection.execute(
-                "SELECT payment_status, order_id FROM payments WHERE transaction_id = ?",
+            // Query diperluas untuk notifikasi di jalur polling
+            const [rows] = await connection.execute(
+                `SELECT 
+                    p.payment_status, o.id AS order_id, o.total_price,
+                    m.fcm_token AS mitra_fcm, m.full_name AS mitra_name
+                 FROM payments p
+                 JOIN orders o ON p.order_id = o.id
+                 LEFT JOIN users m ON o.store_id = m.id
+                 WHERE p.transaction_id = ?`,
                 [partnerReff]
             );
 
-            if (currentStatus.length > 0 && currentStatus[0].payment_status === 'pending') {
-                const orderId = currentStatus[0].order_id;
+            if (rows.length > 0 && rows[0].payment_status === 'pending') {
+                const data = rows[0];
 
-                // Update Tabel Payments
-                await connection.execute(
-                    "UPDATE payments SET payment_status = 'settlement', transaction_time = NOW() WHERE transaction_id = ?",
-                    [partnerReff]
-                );
-
-                // Update Tabel Orders
-                await connection.execute(
-                    "UPDATE orders SET status = 'accepted' WHERE id = ?",
-                    [orderId]
-                );
-
-                // Catat Log
-                await connection.execute(
-                    "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'accepted', 'Pembayaran berhasil dikonfirmasi via manual polling')",
-                    [orderId]
-                );
+                await connection.execute("UPDATE payments SET payment_status = 'settlement', transaction_time = NOW() WHERE transaction_id = ?", [partnerReff]);
+                await connection.execute("UPDATE orders SET status = 'accepted' WHERE id = ?", [data.order_id]);
+                await connection.execute("INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'accepted', 'Pembayaran berhasil dikonfirmasi via manual polling')", [data.order_id]);
 
                 await connection.commit();
-                console.log(`✅ Polling Success: Order #${orderId} updated to Paid.`);
+
+                // KIRIM NOTIFIKASI KE MITRA (Melalui Polling)
+                if (data.mitra_fcm) {
+                    await sendPushNotification(
+                        data.mitra_fcm,
+                        "💰 Pesanan Baru Masuk!",
+                        `Halo ${data.mitra_name}, Order #${data.order_id} senilai Rp ${Number(data.total_price).toLocaleString('id-ID')} telah dibayar.`,
+                        { orderId: String(data.order_id), type: "NEW_ORDER" }
+                    );
+                }
+                console.log(`✅ Polling Success: Order #${data.order_id} processed.`);
             }
         }
 
-        // 3. Kirim respon ke Frontend
-        res.json({
-            success: true,
-            status: linkquStatus.status, // SUCCESS, PENDING, atau FAILED
-            data: linkquStatus
-        });
+        res.json({ success: true, status: linkquStatus.status, data: linkquStatus });
 
     } catch (err) {
         if (connection) await connection.rollback();
