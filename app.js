@@ -2,27 +2,10 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-const admin = require('firebase-admin');
 
-// --- 1. INISIALISASI FIREBASE ADMIN (Via Environment Variable) ---
-try {
-    if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-        // Mengubah string JSON dari .env menjadi Object
-        const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-
-        if (!admin.apps.length) {
-            admin.initializeApp({
-                credential: admin.credential.cert(serviceAccount)
-            });
-            console.log("✅ Firebase Admin Berhasil Diinisialisasi dari ENV");
-        }
-    } else {
-        console.warn("⚠️ Warning: FIREBASE_SERVICE_ACCOUNT tidak ditemukan di .env");
-    }
-} catch (error) {
-    console.error("❌ Gagal inisialisasi Firebase Admin:", error.message);
-    console.log("⚠️ Notifikasi push mungkin tidak akan berfungsi.");
-}
+// --- 1. INISIALISASI FIREBASE ADMIN ---
+// Cukup panggil file config yang sudah berhasil membaca dari Storage Coolify
+const admin = require('./config/firebaseConfig');
 
 // Import Routes
 const authRoutes = require('./routes/authRoutes');
@@ -35,14 +18,13 @@ const app = express();
 
 // --- 2. MIDDLEWARE CORS & JSON ---
 const allowedOrigins = [
-    'https://tangerangfast.netlify.app', // Web Production
-    'http://localhost:19006',            // Expo Go (Lokal)
-    'http://localhost:8081',             // Expo Web (Lokal)
+    'https://tangerangfast.netlify.app',
+    'http://localhost:19006',
+    'http://localhost:8081',
 ];
 
 app.use(cors({
     origin: function (origin, callback) {
-        // Izinkan request tanpa origin (seperti Mobile App, Postman, atau Fetch dari App Native)
         if (!origin || allowedOrigins.indexOf(origin) !== -1) {
             callback(null, true);
         } else {
@@ -83,6 +65,7 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`-------------------------------------------`);
     console.log(`🚀 Server aktif di: http://localhost:${PORT}`);
+    // Status ini akan mengambil kondisi dari inisialisasi di firebaseConfig.js
     console.log(`📡 Firebase Status: ${admin.apps.length > 0 ? '🟢 Online' : '🔴 Offline'}`);
     console.log(`-------------------------------------------`);
 });
