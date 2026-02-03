@@ -200,3 +200,62 @@ exports.handleCallback = async (req, res) => {
         connection.release();
     }
 };
+
+exports.checkPaymentStatus = async (req, res) => {
+    const { partnerReff } = req.params;
+    const connection = await db.getConnection();
+
+    try {
+        // 1. Panggil Service LinkQu
+        const linkquStatus = await linkqu.checkStatus(partnerReff);
+
+        // 2. Jika Status Sukses di LinkQu, Sinkronkan ke Database kita
+        if (linkquStatus.status === 'SUCCESS' || linkquStatus.status === 'SETTLED') {
+            await connection.beginTransaction();
+
+            // Cek status saat ini di database
+            const [currentStatus] = await connection.execute(
+                "SELECT payment_status, order_id FROM payments WHERE transaction_id = ?",
+                [partnerReff]
+            );
+
+            if (currentStatus.length > 0 && currentStatus[0].payment_status === 'pending') {
+                const orderId = currentStatus[0].order_id;
+
+                // Update Tabel Payments
+                await connection.execute(
+                    "UPDATE payments SET payment_status = 'settlement', transaction_time = NOW() WHERE transaction_id = ?",
+                    [partnerReff]
+                );
+
+                // Update Tabel Orders
+                await connection.execute(
+                    "UPDATE orders SET status = 'accepted' WHERE id = ?",
+                    [orderId]
+                );
+
+                // Catat Log
+                await connection.execute(
+                    "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'accepted', 'Pembayaran berhasil dikonfirmasi via manual polling')",
+                    [orderId]
+                );
+
+                await connection.commit();
+                console.log(`✅ Polling Success: Order #${orderId} updated to Paid.`);
+            }
+        }
+
+        // 3. Kirim respon ke Frontend
+        res.json({
+            success: true,
+            status: linkquStatus.status, // SUCCESS, PENDING, atau FAILED
+            data: linkquStatus
+        });
+
+    } catch (err) {
+        if (connection) await connection.rollback();
+        res.status(500).json({ success: false, message: err.message });
+    } finally {
+        connection.release();
+    }
+};
