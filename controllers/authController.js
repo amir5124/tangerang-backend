@@ -5,6 +5,7 @@ const jwt = require('jsonwebtoken');
 const JWT_SECRET = process.env.JWT_SECRET || 'bad750e525b96e0efaf8bf2e4daa19515a2dcf76e047f0aa28bb35eebd767a08';
 
 exports.register = async (req, res) => {
+    // Pastikan fcm_token diambil dari req.body
     const { full_name, email, phone_number, password, role, fcm_token } = req.body;
 
     try {
@@ -19,6 +20,7 @@ exports.register = async (req, res) => {
 
         const hashedPassword = await bcrypt.hash(password, 10);
 
+        // Gunakan fcm_token || null agar jika frontend mengirim string kosong tetap tersimpan sebagai NULL di DB
         const [userResult] = await db.query(
             'INSERT INTO users (full_name, email, phone_number, password, role, fcm_token) VALUES (?, ?, ?, ?, ?, ?)',
             [full_name, email, phone_number, hashedPassword, role, fcm_token || null]
@@ -27,34 +29,31 @@ exports.register = async (req, res) => {
         const userId = userResult.insertId;
         let storeId = null;
 
-        // --- MODIFIKASI UNTUK MITRA ---
         if (role === 'mitra') {
             const [storeResult] = await db.query(
                 `INSERT INTO stores (user_id, store_name, category, address, latitude, longitude, approval_status, is_active) 
                  VALUES (?, ?, ?, ?, 0, 0, 'pending', 0)`,
                 [userId, `${full_name} Service`, 'ac', 'Alamat belum diatur']
             );
-            storeId = storeResult.insertId; // Ambil ID toko yang baru dibuat
+            storeId = storeResult.insertId;
         }
 
-        // --- BUAT TOKEN JWT AGAR FRONTEND BISA LANGSUNG LOGIN ---
         const token = jwt.sign(
             { id: userId, role: role },
             JWT_SECRET,
             { expiresIn: '30d' }
         );
 
-        // --- KIRIM RESPONSE LENGKAP (Sesuai kebutuhan Frontend) ---
         res.status(201).json({
             message: "Registrasi berhasil",
-            token, // Token JWT (Kunci akses)
+            token,
             user: {
                 id: userId,
                 full_name,
                 role,
                 phone_number,
-                store_id: storeId, // Store ID untuk Dashboard Mitra
-                is_active: 0 // Default belum aktif
+                store_id: storeId,
+                is_active: 0
             }
         });
 
@@ -66,6 +65,9 @@ exports.register = async (req, res) => {
 
 exports.login = async (req, res) => {
     const { email, password, fcm_token } = req.body;
+
+    // Log untuk melihat apa yang dikirim oleh Frontend
+    console.log(`📩 Login Attempt: ${email} | FCM Token: ${fcm_token || 'NOT_SENT'}`);
 
     try {
         // 1. Cari user
@@ -87,9 +89,13 @@ exports.login = async (req, res) => {
             }
         }
 
-        // 4. Update FCM Token
-        if (fcm_token) {
-            await db.query('UPDATE users SET fcm_token = ? WHERE id = ?', [fcm_token, user.id]);
+        // 4. Update FCM Token (LOGIKA DIPERBAIKI)
+        // Kita gunakan hasOwnProperty untuk mengecek apakah key 'fcm_token' ada di req.body
+        // Ini memastikan nilai null atau string kosong tetap diproses.
+        if (req.body.hasOwnProperty('fcm_token')) {
+            const tokenValue = fcm_token || null;
+            await db.query('UPDATE users SET fcm_token = ? WHERE id = ?', [tokenValue, user.id]);
+            console.log(`✅ [DB] FCM Token updated for UID ${user.id}`);
         }
 
         const token = jwt.sign(
@@ -98,7 +104,7 @@ exports.login = async (req, res) => {
             { expiresIn: '30d' }
         );
 
-        // 5. Response Lengkap dengan Status Verifikasi (is_active)
+        // 5. Response Lengkap
         res.json({
             token,
             user: {
@@ -108,7 +114,6 @@ exports.login = async (req, res) => {
                 role: user.role,
                 phone_number: user.phone_number,
                 saldo: user.saldo,
-                // Tambahkan info toko agar frontend bisa cek status verifikasi
                 store_id: storeData ? storeData.id : null,
                 is_active: storeData ? storeData.is_active : (user.role === 'admin' ? 1 : 0)
             }
