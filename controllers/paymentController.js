@@ -244,20 +244,48 @@ exports.handleCallback = async (req, res) => {
                 console.log(`✅ DB Updated: Order #${order.order_id} has been accepted.`);
 
                 // 2. KIRIM PUSH NOTIFICATION KE MITRA
+                // 2. KIRIM PUSH NOTIFICATION KE MITRA (Dengan Logika Multi-Layanan)
                 if (order.mitra_fcm) {
                     try {
+                        // 1. Parsing items agar bisa diakses datanya
+                        const itemsDetail = typeof order.items === 'string' ? JSON.parse(order.items) : order.items;
+
+                        let teksLayanan = "Jasa"; // Fallback default
+
+                        if (itemsDetail && itemsDetail.length > 0) {
+                            const namaLayananPertama = itemsDetail[0].nama; // Misal: "Cuci Ac"
+                            const jumlahLayananLainnya = itemsDetail.length - 1;
+
+                            if (jumlahLayananLainnya > 0) {
+                                // Jika lebih dari 1 layanan
+                                teksLayanan = `${namaLayananPertama} dan ${jumlahLayananLainnya} layanan lainnya`;
+                            } else {
+                                // Jika hanya 1 layanan
+                                teksLayanan = namaLayananPertama;
+                            }
+                        }
+
                         await sendPushNotification(
                             order.mitra_fcm,
                             "Pesanan Baru Masuk! 🔔",
-                            `Halo ${order.mitra_name}, ada pesanan baru #${order.order_id} sebesar Rp ${parseInt(amount).toLocaleString('id-ID')}.`,
-                            { orderId: String(order.order_id), type: "NEW_ORDER" }
+                            // Teks Pesan sesuai permintaan:
+                            `Halo ${order.mitra_name}, ada pesanan jasa ${teksLayanan} masuk.`,
+                            {
+                                orderId: String(order.order_id),
+                                type: "NEW_ORDER",
+                                customerName: String(order.customer_name),
+                                address: String(order.address_customer),
+                                schedule: `${order.scheduled_date} ${order.scheduled_time}`,
+                                buildingType: String(order.building_type),
+                                totalPrice: String(amount),
+                                items: JSON.stringify(itemsDetail)
+                            }
                         );
-                        console.log(`📲 FCM Sent: Notifikasi terkirim ke Mitra ${order.mitra_name}`);
+
+                        console.log(`📲 FCM Sent: Notif untuk ${order.mitra_name} (Layanan: ${teksLayanan})`);
                     } catch (fcmErr) {
-                        console.error("⚠️ FCM Error: Gagal mengirim push notif:", fcmErr.message);
+                        console.error("⚠️ FCM Error:", fcmErr.message);
                     }
-                } else {
-                    console.log("ℹ️ FCM Skip: Mitra tidak memiliki token (NULL).");
                 }
 
                 // 3. BAGIAN EMAIL (DIKOMENTARI UNTUK TESTING NOTIF)

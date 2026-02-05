@@ -1,4 +1,3 @@
-// services/notificationService.js
 const admin = require('../config/firebaseConfig');
 
 exports.sendPushNotification = async (targetToken, title, body, data = {}) => {
@@ -8,12 +7,29 @@ exports.sendPushNotification = async (targetToken, title, body, data = {}) => {
     }
 
     const message = {
+        token: targetToken,
         notification: {
             title: title,
             body: body,
         },
-        data: data, // Opsional: untuk navigasi di app (misal { orderId: "123" })
-        token: targetToken,
+        data: data,
+        // Tambahkan konfigurasi Android agar berbunyi
+        android: {
+            priority: "high", // Penting agar muncul seketika
+            notification: {
+                sound: "default",
+                channelId: "orders", // Harus sama dengan di React Native
+                priority: "high",
+            },
+        },
+        // Tambahkan konfigurasi iOS agar berbunyi
+        apns: {
+            payload: {
+                aps: {
+                    sound: "default",
+                },
+            },
+        },
     };
 
     try {
