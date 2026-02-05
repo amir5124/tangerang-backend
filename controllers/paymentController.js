@@ -204,17 +204,19 @@ exports.handleCallback = async (req, res) => {
         if (status === 'SUCCESS' || status === 'SETTLED') {
             await connection.beginTransaction();
 
-            // Query data untuk update DB
+            // Ambil data detail Order, Customer, dan Token FCM Mitra
             const [rows] = await connection.execute(
                 `SELECT 
                     o.id AS order_id, o.items, o.building_type, o.scheduled_date, 
                     o.scheduled_time, o.address_customer, o.customer_notes, o.total_price,
                     u.full_name AS customer_name, u.email AS customer_email, u.phone_number,
-                    m.full_name AS mitra_name
+                    m.fcm_token AS mitra_fcm, m.full_name AS mitra_name
                  FROM payments p
                  JOIN orders o ON p.order_id = o.id
                  JOIN users u ON o.customer_id = u.id
+                 /* 1. Sambungkan Order ke Tabel Stores berdasarkan store_id */
                  JOIN stores s ON o.store_id = s.id
+                 /* 2. Sambungkan Stores ke Tabel Users untuk ambil data pemilik toko (Mitra) */
                  JOIN users m ON s.user_id = m.id
                  WHERE p.transaction_id = ? AND p.payment_status = 'pending'`,
                 [partner_reff]
@@ -223,7 +225,7 @@ exports.handleCallback = async (req, res) => {
             if (rows.length > 0) {
                 const order = rows[0];
 
-                // 1. UPDATE DATABASE
+                // 1. Update Database (WAJIB SELESAI DULU)
                 await connection.execute(
                     "UPDATE payments SET payment_status = 'settlement', transaction_time = NOW() WHERE transaction_id = ?",
                     [partner_reff]
@@ -233,61 +235,93 @@ exports.handleCallback = async (req, res) => {
                     [order.order_id]
                 );
                 await connection.execute(
-                    "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'accepted', 'Pembayaran sukses (Testing Mode)')",
+                    "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'accepted', 'Pembayaran berhasil dikonfirmasi via LinkQu Callback')",
                     [order.order_id]
                 );
 
+                // Commit transaksi DB agar data aman sebelum kirim notif
                 await connection.commit();
-                console.log(`✅ DB Updated: Order #${order.order_id}`);
+                console.log(`✅ DB Updated: Order #${order.order_id} has been accepted.`);
 
-                // 2. KIRIM PUSH NOTIFICATION (MODE TESTING KE TOKEN SPESIFIK)
-                // Token testing yang kamu berikan
-                const TEST_TOKEN = "e-HXBcdTRSanY-jChqKbZZ:APA91bHaPnC5geRMVJFJf6FEmdgftBT46Gmn1aUhPN38WPCQdqqvRM5qih-c3wRK2ic2bFH4jtzcGDY1o8KUlv63zzzaEUDoAQy569EQAXWCTFwBcMX8JFY";
+                // 2. KIRIM PUSH NOTIFICATION KE MITRA
+                // 2. KIRIM PUSH NOTIFICATION KE MITRA (Dengan Logika Multi-Layanan)
+                if (order.mitra_fcm) {
+                    try {
+                        // 1. Parsing items agar bisa diakses datanya
+                        const itemsDetail = typeof order.items === 'string' ? JSON.parse(order.items) : order.items;
 
-                try {
-                    const itemsDetail = typeof order.items === 'string' ? JSON.parse(order.items) : order.items;
-                    let teksLayanan = "Jasa";
+                        let teksLayanan = "Jasa"; // Fallback default
 
-                    if (itemsDetail && itemsDetail.length > 0) {
-                        const namaLayananPertama = itemsDetail[0].nama;
-                        const jumlahLayananLainnya = itemsDetail.length - 1;
-                        teksLayanan = jumlahLayananLainnya > 0
-                            ? `${namaLayananPertama} dan ${jumlahLayananLainnya} layanan lainnya`
-                            : namaLayananPertama;
-                    }
+                        if (itemsDetail && itemsDetail.length > 0) {
+                            const namaLayananPertama = itemsDetail[0].nama; // Misal: "Cuci Ac"
+                            const jumlahLayananLainnya = itemsDetail.length - 1;
 
-                    // Logika Pengiriman Notif
-                    await sendPushNotification(
-                        TEST_TOKEN, // <--- MEMAKSA KE TOKEN TEST
-                        "Pesanan Baru Masuk! 🔔 [TEST]",
-                        `Halo ${order.mitra_name}, ada pesanan jasa ${teksLayanan} masuk.`,
-                        {
-                            orderId: String(order.order_id),
-                            type: "NEW_ORDER",
-                            customerName: String(order.customer_name),
-                            address: String(order.address_customer),
-                            schedule: `${order.scheduled_date} ${order.scheduled_time}`,
-                            items: JSON.stringify(itemsDetail),
-                            channelId: "default" // Memastikan channelId sesuai dengan yang di _layout.js mitra
+                            if (jumlahLayananLainnya > 0) {
+                                // Jika lebih dari 1 layanan
+                                teksLayanan = `${namaLayananPertama} dan ${jumlahLayananLainnya} layanan lainnya`;
+                            } else {
+                                // Jika hanya 1 layanan
+                                teksLayanan = namaLayananPertama;
+                            }
                         }
-                    );
 
-                    console.log(`📲 FCM TEST SENT to: ${TEST_TOKEN.substring(0, 15)}... (Layanan: ${teksLayanan})`);
-                } catch (fcmErr) {
-                    console.error("⚠️ FCM Test Error:", fcmErr.message);
+                        await sendPushNotification(
+                            order.mitra_fcm,
+                            "Pesanan Baru Masuk! 🔔",
+                            // Teks Pesan sesuai permintaan:
+                            `Halo ${order.mitra_name}, ada pesanan jasa ${teksLayanan} masuk.`,
+                            {
+                                orderId: String(order.order_id),
+                                type: "NEW_ORDER",
+                                customerName: String(order.customer_name),
+                                address: String(order.address_customer),
+                                schedule: `${order.scheduled_date} ${order.scheduled_time}`,
+                                buildingType: String(order.building_type),
+                                totalPrice: String(amount),
+                                items: JSON.stringify(itemsDetail)
+                            }
+                        );
+
+                        console.log(`📲 FCM Sent: Notif untuk ${order.mitra_name} (Layanan: ${teksLayanan})`);
+                    } catch (fcmErr) {
+                        console.error("⚠️ FCM Error:", fcmErr.message);
+                    }
                 }
+
+                // 3. BAGIAN EMAIL (DIKOMENTARI UNTUK TESTING NOTIF)
+                /* const layananTerpilih = typeof order.items === 'string' ? JSON.parse(order.items) : order.items;
+                const emailPayload = {
+                    orderId: order.order_id,
+                    customer: { nama: order.customer_name, email: order.customer_email, wa: order.phone_number },
+                    layanan: layananTerpilih,
+                    properti: {
+                        jenisGedung: order.building_type,
+                        jadwal: `${moment(order.scheduled_date).format('DD-MM-YYYY')} | ${order.scheduled_time}`,
+                        alamat: order.address_customer,
+                        catatan: order.customer_notes || "-"
+                    },
+                    pembayaran: { total: `Rp${parseInt(amount).toLocaleString('id-ID')}`, metode: "LinkQu Payment", reff: partner_reff }
+                };
+
+                // Sementara dimatikan karena kendala SMTP Gmail
+                // await sendInvoiceEmail(order.customer_email, emailPayload, false);
+                // await sendInvoiceEmail(process.env.DEFAULT_EMAIL, { ...emailPayload, isAdmin: true }, true);
+                */
 
                 console.log(`🚀 Webhook Processed Successfully for Order #${order.order_id}`);
             } else {
-                console.log(`⚠️ Webhook Skip: Reff #${partner_reff} tidak ditemukan atau sudah settlement.`);
+                console.log(`⚠️ Webhook Skip: Transaction ID #${partner_reff} not found or already processed.`);
             }
         }
 
+        // LinkQu membutuhkan respon 200 OK agar tidak mengirim ulang callback
         res.status(200).send("OK");
+
     } catch (err) {
         if (connection) await connection.rollback();
         console.error("❌ Callback Error:", err.message);
-        res.status(500).send("Internal Server Error");
+        // Tetap kirim 500 agar LinkQu tahu ada masalah di server kita
+        res.status(500).send("Callback Error");
     } finally {
         connection.release();
     }
