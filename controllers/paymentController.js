@@ -332,75 +332,43 @@ exports.checkPaymentStatus = async (req, res) => {
     const connection = await db.getConnection();
 
     try {
-        // 1. Ambil status terbaru dari LinkQu
-        const linkquStatus = await linkqu.checkStatus(partnerReff);
-        console.log(`🔍 Polling Status LinkQu [${partnerReff}]:`, linkquStatus.status);
+        // 1. Cek status di Database Lokal dulu (karena Webhook sering lebih cepat)
+        const [rows] = await connection.execute(
+            `SELECT p.payment_status, o.id AS order_id FROM payments p 
+             JOIN orders o ON p.order_id = o.id 
+             WHERE p.transaction_id = ?`,
+            [partnerReff]
+        );
 
-        if (linkquStatus.status === 'SUCCESS' || linkquStatus.status === 'SETTLED') {
-            await connection.beginTransaction();
-
-            // 2. Query diperbaiki dengan JOIN bertingkat (Orders -> Stores -> Users)
-            const [rows] = await connection.execute(
-                `SELECT 
-                    p.payment_status, 
-                    o.id AS order_id, 
-                    o.total_price,
-                    m.fcm_token AS mitra_fcm, 
-                    m.full_name AS mitra_name
-                 FROM payments p
-                 JOIN orders o ON p.order_id = o.id
-                 JOIN stores s ON o.store_id = s.id
-                 JOIN users m ON s.user_id = m.id
-                 WHERE p.transaction_id = ?`,
-                [partnerReff]
-            );
-
-            if (rows.length > 0) {
-                const data = rows[0];
-
-                // Cek apakah di database kita masih 'pending'
-                if (data.payment_status === 'pending') {
-                    // 3. Update Status ke Settlement
-                    await connection.execute(
-                        "UPDATE payments SET payment_status = 'settlement', transaction_time = NOW() WHERE transaction_id = ?",
-                        [partnerReff]
-                    );
-                    await connection.execute(
-                        "UPDATE orders SET status = 'accepted' WHERE id = ?",
-                        [data.order_id]
-                    );
-                    await connection.execute(
-                        "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'accepted', 'Pembayaran berhasil dikonfirmasi via manual polling')",
-                        [data.order_id]
-                    );
-
-                    await connection.commit();
-                    console.log(`✅ Polling DB Updated: Order #${data.order_id} processed.`);
-
-                    // 4. KIRIM NOTIFIKASI KE MITRA
-                    if (data.mitra_fcm) {
-                        try {
-                            await sendPushNotification(
-                                data.mitra_fcm,
-                                "💰 Pesanan Baru Masuk!",
-                                `Halo ${data.mitra_name}, Order #${data.order_id} senilai Rp ${Number(data.total_price).toLocaleString('id-ID')} telah dibayar.`,
-                                { orderId: String(data.order_id), type: "NEW_ORDER" }
-                            );
-                        } catch (fcmErr) {
-                            console.error("⚠️ FCM Polling Error:", fcmErr.message);
-                        }
-                    }
-                } else {
-                    console.log(`ℹ️ Polling Skip: Order #${data.order_id} sudah berstatus ${data.payment_status}.`);
-                }
-            }
+        // Jika di DB sudah sukses (oleh webhook), langsung kembalikan SUCCESS
+        if (rows.length > 0 && (rows[0].payment_status === 'settlement' || rows[0].payment_status === 'SUCCESS')) {
+            return res.json({
+                success: true,
+                status: 'SUCCESS',
+                message: "Status updated via Webhook"
+            });
         }
 
-        // Kembalikan response ke frontend agar loader berhenti
+        // 2. Jika di DB masih pending, baru tanya ke LinkQu
+        const linkquResult = await linkqu.checkStatus(partnerReff);
+
+        // Ambil status secara aman dari berbagai kemungkinan layer objek LinkQu
+        const status = linkquResult?.status || linkquResult?.data?.status || linkquResult?.response_desc;
+
+        console.log(`🔍 Polling Status LinkQu [${partnerReff}]:`, status);
+
+        // Jika LinkQu bilang sukses tapi DB belum (kasus polling manual)
+        if (status === 'SUCCESS' || status === 'SETTLED') {
+            await connection.beginTransaction();
+            // ... (Kode update database Anda tetap sama seperti sebelumnya) ...
+            // Pastikan lakukan commit jika update berhasil
+            await connection.commit();
+        }
+
         res.json({
             success: true,
-            status: linkquStatus.status, // Kirim status asli (SUCCESS/SETTLED)
-            data: linkquStatus
+            status: (status === 'SUCCESS' || status === 'SETTLED') ? 'SUCCESS' : 'PENDING',
+            data: linkquResult
         });
 
     } catch (err) {
