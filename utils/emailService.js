@@ -2,12 +2,12 @@ const nodemailer = require('nodemailer');
 
 // Konfigurasi Transport (Gunakan SMTP Anda, misal: Gmail atau Brevo)
 const transporter = nodemailer.createTransport({
-    host: process.env.EMAIL_HOST || 'smtp.gmail.com',
-    port: 465,
-    secure: true, // true untuk port 465
+    host: process.env.EMAIL_HOST,
+    port: parseInt(process.env.EMAIL_PORT || '465'),
+    secure: process.env.EMAIL_SECURE === 'true', // Mengonversi string 'true' menjadi boolean
     auth: {
-        user: process.env.EMAIL_USER, // Email Anda
-        pass: process.env.EMAIL_PASS, // App Password (bukan password akun biasa)
+        user: process.env.EMAIL_USER,
+        pass: process.env.EMAIL_PASS,
     },
 });
 
