@@ -214,7 +214,10 @@ exports.handleCallback = async (req, res) => {
                  FROM payments p
                  JOIN orders o ON p.order_id = o.id
                  JOIN users u ON o.customer_id = u.id
-                 LEFT JOIN users m ON o.store_id = m.id
+                 /* 1. Sambungkan Order ke Tabel Stores berdasarkan store_id */
+                 JOIN stores s ON o.store_id = s.id
+                 /* 2. Sambungkan Stores ke Tabel Users untuk ambil data pemilik toko (Mitra) */
+                 JOIN users m ON s.user_id = m.id
                  WHERE p.transaction_id = ? AND p.payment_status = 'pending'`,
                 [partner_reff]
             );
@@ -301,49 +304,80 @@ exports.checkPaymentStatus = async (req, res) => {
     const connection = await db.getConnection();
 
     try {
+        // 1. Ambil status terbaru dari LinkQu
         const linkquStatus = await linkqu.checkStatus(partnerReff);
+        console.log(`🔍 Polling Status LinkQu [${partnerReff}]:`, linkquStatus.status);
 
         if (linkquStatus.status === 'SUCCESS' || linkquStatus.status === 'SETTLED') {
             await connection.beginTransaction();
 
-            // Query diperluas untuk notifikasi di jalur polling
+            // 2. Query diperbaiki dengan JOIN bertingkat (Orders -> Stores -> Users)
             const [rows] = await connection.execute(
                 `SELECT 
-                    p.payment_status, o.id AS order_id, o.total_price,
-                    m.fcm_token AS mitra_fcm, m.full_name AS mitra_name
+                    p.payment_status, 
+                    o.id AS order_id, 
+                    o.total_price,
+                    m.fcm_token AS mitra_fcm, 
+                    m.full_name AS mitra_name
                  FROM payments p
                  JOIN orders o ON p.order_id = o.id
-                 LEFT JOIN users m ON o.store_id = m.id
+                 JOIN stores s ON o.store_id = s.id
+                 JOIN users m ON s.user_id = m.id
                  WHERE p.transaction_id = ?`,
                 [partnerReff]
             );
 
-            if (rows.length > 0 && rows[0].payment_status === 'pending') {
+            if (rows.length > 0) {
                 const data = rows[0];
 
-                await connection.execute("UPDATE payments SET payment_status = 'settlement', transaction_time = NOW() WHERE transaction_id = ?", [partnerReff]);
-                await connection.execute("UPDATE orders SET status = 'accepted' WHERE id = ?", [data.order_id]);
-                await connection.execute("INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'accepted', 'Pembayaran berhasil dikonfirmasi via manual polling')", [data.order_id]);
-
-                await connection.commit();
-
-                // KIRIM NOTIFIKASI KE MITRA (Melalui Polling)
-                if (data.mitra_fcm) {
-                    await sendPushNotification(
-                        data.mitra_fcm,
-                        "💰 Pesanan Baru Masuk!",
-                        `Halo ${data.mitra_name}, Order #${data.order_id} senilai Rp ${Number(data.total_price).toLocaleString('id-ID')} telah dibayar.`,
-                        { orderId: String(data.order_id), type: "NEW_ORDER" }
+                // Cek apakah di database kita masih 'pending'
+                if (data.payment_status === 'pending') {
+                    // 3. Update Status ke Settlement
+                    await connection.execute(
+                        "UPDATE payments SET payment_status = 'settlement', transaction_time = NOW() WHERE transaction_id = ?",
+                        [partnerReff]
                     );
+                    await connection.execute(
+                        "UPDATE orders SET status = 'accepted' WHERE id = ?",
+                        [data.order_id]
+                    );
+                    await connection.execute(
+                        "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'accepted', 'Pembayaran berhasil dikonfirmasi via manual polling')",
+                        [data.order_id]
+                    );
+
+                    await connection.commit();
+                    console.log(`✅ Polling DB Updated: Order #${data.order_id} processed.`);
+
+                    // 4. KIRIM NOTIFIKASI KE MITRA
+                    if (data.mitra_fcm) {
+                        try {
+                            await sendPushNotification(
+                                data.mitra_fcm,
+                                "💰 Pesanan Baru Masuk!",
+                                `Halo ${data.mitra_name}, Order #${data.order_id} senilai Rp ${Number(data.total_price).toLocaleString('id-ID')} telah dibayar.`,
+                                { orderId: String(data.order_id), type: "NEW_ORDER" }
+                            );
+                        } catch (fcmErr) {
+                            console.error("⚠️ FCM Polling Error:", fcmErr.message);
+                        }
+                    }
+                } else {
+                    console.log(`ℹ️ Polling Skip: Order #${data.order_id} sudah berstatus ${data.payment_status}.`);
                 }
-                console.log(`✅ Polling Success: Order #${data.order_id} processed.`);
             }
         }
 
-        res.json({ success: true, status: linkquStatus.status, data: linkquStatus });
+        // Kembalikan response ke frontend agar loader berhenti
+        res.json({
+            success: true,
+            status: linkquStatus.status, // Kirim status asli (SUCCESS/SETTLED)
+            data: linkquStatus
+        });
 
     } catch (err) {
         if (connection) await connection.rollback();
+        console.error("❌ Polling Error:", err.message);
         res.status(500).json({ success: false, message: err.message });
     } finally {
         connection.release();
