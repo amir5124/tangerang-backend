@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+require('./jobs/cronJobs');
 
 // --- 1. INISIALISASI FIREBASE ADMIN ---
 // Cukup panggil file config yang sudah berhasil membaca dari Storage Coolify

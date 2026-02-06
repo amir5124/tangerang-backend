@@ -4,7 +4,7 @@ const orderController = require('../controllers/orderController');
 const multer = require('multer');
 const path = require('path');
 
-// Konfigurasi Penyimpanan Foto
+// Konfigurasi Penyimpanan Foto Bukti Kerja Mitra
 const storage = multer.diskStorage({
     destination: 'uploads/work_evidence/',
     filename: (req, file, cb) => {
@@ -13,11 +13,16 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage: storage });
 
-// Endpoint yang sudah ada
+// --- ENDPOINT YANG SUDAH ADA ---
 router.post('/create', orderController.createOrder);
 router.get('/detail/:id', orderController.getOrderDetail);
 
-// TAMBAHKAN INI: Update Status (Mendukung upload foto 'image')
+// --- ENDPOINT MITRA ---
+// Digunakan mitra untuk update status (Accepted, OTW, Working, Completed)
 router.post('/:id/update-status', upload.single('image'), orderController.updateOrderStatus);
+
+// --- ENDPOINT CUSTOMER (BARU) ---
+// Digunakan customer untuk konfirmasi selesai + kirim rating + cairkan dana
+router.post('/:id/complete-customer', orderController.customerCompleteOrder);
 
 module.exports = router;
