@@ -1,11 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const authController = require('../controllers/authController');
+const { authenticateToken } = require('../middleware/authMiddleware');
 
-// Endpoint: POST /api/auth/register
 router.post('/register', authController.register);
-
-// Endpoint: POST /api/auth/login
 router.post('/login', authController.login);
+
+// Tambahkan ini:
+router.post('/logout', authenticateToken, authController.logout);
 
 module.exports = router;
