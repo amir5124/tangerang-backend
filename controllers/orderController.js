@@ -65,3 +65,82 @@ exports.createOrder = async (req, res) => {
         connection.release();
     }
 };
+
+exports.getOrderDetail = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const sql = `
+            SELECT 
+                o.id, 
+                o.status, 
+                o.scheduled_date, 
+                o.scheduled_time, 
+                o.address_customer, 
+                o.building_type,
+                u.full_name AS customer_name, 
+                u.phone_number,
+                -- Mengambil items dan menjadikannya JSON string agar bisa di-parse Frontend
+                (SELECT JSON_ARRAYAGG(
+                    JSON_OBJECT(
+                        'nama', service_name,
+                        'qty', qty,
+                        'hargaSatuan', price_satuan
+                    )
+                ) FROM order_items WHERE order_id = o.id) AS items
+            FROM orders o
+            JOIN users u ON o.customer_id = u.id
+            WHERE o.id = ?`;
+
+        const [rows] = await db.execute(sql, [id]);
+
+        if (rows.length === 0) return res.status(404).json({ message: "Order tidak ditemukan" });
+
+        res.status(200).json(rows[0]);
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+exports.updateOrderStatus = async (req, res) => {
+    const { id } = req.params;
+    const { status } = req.body; // status dikirim dari frontend (e.g., 'on_the_way')
+    const connection = await db.getConnection();
+
+    try {
+        await connection.beginTransaction();
+
+        // 1. Update status di tabel orders
+        const sqlUpdate = "UPDATE orders SET status = ? WHERE id = ?";
+        await connection.execute(sqlUpdate, [status, id]);
+
+        // 2. Jika status 'completed' dan ada file, simpan informasi foto
+        let photoPath = null;
+        if (status === 'completed' && req.file) {
+            photoPath = req.file.path;
+            // Opsional: Simpan path foto ke kolom 'completion_image' di tabel orders jika ada
+            await connection.execute(
+                "UPDATE orders SET completion_image = ? WHERE id = ?",
+                [photoPath, id]
+            );
+        }
+
+        // 3. Catat history di tabel order_status_logs
+        const sqlLog = "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, ?, ?)";
+        const notes = `Status diperbarui menjadi ${status} oleh Mitra`;
+        await connection.execute(sqlLog, [id, status, notes]);
+
+        await connection.commit();
+        res.status(200).json({
+            success: true,
+            message: `Status berhasil diperbarui ke ${status}`,
+            image_path: photoPath
+        });
+
+    } catch (error) {
+        await connection.rollback();
+        console.error("Update Status Error:", error);
+        res.status(500).json({ success: false, message: error.message });
+    } finally {
+        connection.release();
+    }
+};
