@@ -80,15 +80,43 @@ exports.createOrder = async (req, res) => {
 exports.getOrderDetail = async (req, res) => {
     try {
         const { id } = req.params;
+        console.log(`🔍 [LOG] Fetching Order Detail ID: ${id}`);
+
         const sql = `
-            SELECT o.*, u.full_name AS customer_name, u.phone_number, u.fcm_token AS customer_fcm,
-            m.full_name AS mitra_name, (SELECT JSON_ARRAYAGG(JSON_OBJECT('nama', service_name, 'qty', qty, 'hargaSatuan', price_satuan)) 
-            FROM order_items WHERE order_id = o.id) AS items
-            FROM orders o JOIN users u ON o.customer_id = u.id 
-            JOIN stores s ON o.store_id = s.id JOIN users m ON s.user_id = m.id WHERE o.id = ?`;
+            SELECT 
+                o.*, 
+                -- Info Pelanggan (Penting untuk Mitra)
+                u.full_name AS customer_name, 
+                u.phone_number AS customer_phone, 
+                u.fcm_token AS customer_fcm,
+                -- Info Mitra/Toko (Penting untuk Customer)
+                m.full_name AS mitra_name, 
+                m.phone_number AS phone_number, -- Kita pakai alias phone_number agar cocok dengan Frontend
+                m.fcm_token AS mitra_fcm,
+                s.store_name,
+                -- Rincian Item
+                (SELECT JSON_ARRAYAGG(
+                    JSON_OBJECT('nama', service_name, 'qty', qty, 'hargaSatuan', price_satuan)
+                 ) FROM order_items WHERE order_id = o.id) AS items
+            FROM orders o 
+            JOIN users u ON o.customer_id = u.id 
+            JOIN stores s ON o.store_id = s.id 
+            JOIN users m ON s.user_id = m.id 
+            WHERE o.id = ?`;
+
         const [rows] = await db.execute(sql, [id]);
+
+        if (rows.length === 0) {
+            console.log(`❌ [LOG] Order ID ${id} tidak ditemukan.`);
+            return res.status(404).json({ success: false, message: 'Pesanan tidak ditemukan' });
+        }
+
+        console.log(`✅ [LOG] Data dikirim ke Client. Status: ${rows[0].status}`);
         res.status(200).json({ success: true, data: rows[0] });
-    } catch (error) { res.status(500).json({ success: false, error: error.message }); }
+    } catch (error) {
+        console.error(`🔥 [ERROR] getOrderDetail:`, error.message);
+        res.status(500).json({ success: false, error: error.message });
+    }
 };
 
 // Update status oleh MITRA

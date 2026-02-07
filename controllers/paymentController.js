@@ -215,9 +215,7 @@ exports.handleCallback = async (req, res) => {
                  FROM payments p
                  JOIN orders o ON p.order_id = o.id
                  JOIN users u ON o.customer_id = u.id
-                 /* Sambungkan Order ke Tabel Stores berdasarkan store_id */
                  JOIN stores s ON o.store_id = s.id
-                 /* Sambungkan Stores ke Tabel Users untuk ambil data pemilik toko (Mitra) */
                  JOIN users m ON s.user_id = m.id
                  WHERE p.transaction_id = ? AND p.payment_status = 'pending'`,
                 [partner_reff]
