@@ -3,10 +3,10 @@ const { sendPushNotification } = require('../services/notificationService');
 
 /**
  * HELPER: Fungsi Internal untuk Pencairan Dana
- * Digunakan oleh customerCompleteOrder dan Cron Job
+ * UPDATE: Sekarang mendukung otomatis membuat wallet jika belum ada (Upsert)
  */
 const releaseFundsToMitra = async (connection, orderId) => {
-    // 1. Ambil detail biaya dan ID User Mitra
+    // 1. Ambil detail biaya dan ID User Mitra langsung dari tabel stores
     const [order] = await connection.execute(
         `SELECT o.total_price, o.platform_fee, s.user_id as mitra_user_id 
          FROM orders o 
@@ -18,21 +18,37 @@ const releaseFundsToMitra = async (connection, orderId) => {
     const { total_price, platform_fee, mitra_user_id } = order[0];
 
     // Net amount yang diterima mitra (Total - Biaya Aplikasi)
-    const netAmount = total_price - platform_fee;
+    const netAmount = parseFloat(total_price) - parseFloat(platform_fee);
 
-    // 2. Tambah saldo di tabel wallets
-    await connection.execute(
-        "UPDATE wallets SET balance = balance + ? WHERE user_id = ?",
-        [netAmount, mitra_user_id]
+    // 2. CEK / BUAT WALLET (Upsert Logic)
+    // Cek apakah wallet sudah ada
+    const [walletCheck] = await connection.execute(
+        "SELECT id FROM wallets WHERE user_id = ?",
+        [mitra_user_id]
     );
 
-    // 3. Ambil wallet_id untuk history
-    const [wallet] = await connection.execute("SELECT id FROM wallets WHERE user_id = ?", [mitra_user_id]);
+    let walletId;
 
-    // 4. Catat history transaksi wallet
+    if (walletCheck.length === 0) {
+        // Jika tidak ada, buat wallet baru
+        const [insertWallet] = await connection.execute(
+            "INSERT INTO wallets (user_id, balance) VALUES (?, ?)",
+            [mitra_user_id, netAmount]
+        );
+        walletId = insertWallet.insertId;
+    } else {
+        // Jika ada, update saldo yang sudah ada
+        await connection.execute(
+            "UPDATE wallets SET balance = balance + ? WHERE user_id = ?",
+            [netAmount, mitra_user_id]
+        );
+        walletId = walletCheck[0].id;
+    }
+
+    // 3. Catat history transaksi wallet
     await connection.execute(
         "INSERT INTO wallet_transactions (wallet_id, amount, type, description) VALUES (?, ?, 'credit', ?)",
-        [wallet[0].id, netAmount, `Penghasilan Order #${orderId}`]
+        [walletId, netAmount, `Penghasilan Order #${orderId}`]
     );
 };
 
@@ -80,21 +96,18 @@ exports.createOrder = async (req, res) => {
 exports.getOrderDetail = async (req, res) => {
     try {
         const { id } = req.params;
-        console.log(`🔍 [LOG] Fetching Order Detail ID: ${id}`);
-
         const sql = `
             SELECT 
                 o.*, 
-                -- Info Pelanggan (Penting untuk Mitra)
+                o.proof_image_url,
                 u.full_name AS customer_name, 
                 u.phone_number AS customer_phone, 
                 u.fcm_token AS customer_fcm,
-                -- Info Mitra/Toko (Penting untuk Customer)
                 m.full_name AS mitra_name, 
-                m.phone_number AS phone_number, -- Kita pakai alias phone_number agar cocok dengan Frontend
+                m.phone_number AS phone_number,
                 m.fcm_token AS mitra_fcm,
                 s.store_name,
-                -- Rincian Item
+                (SELECT rating FROM reviews WHERE order_id = o.id LIMIT 1) as already_rated,
                 (SELECT JSON_ARRAYAGG(
                     JSON_OBJECT('nama', service_name, 'qty', qty, 'hargaSatuan', price_satuan)
                  ) FROM order_items WHERE order_id = o.id) AS items
@@ -105,16 +118,14 @@ exports.getOrderDetail = async (req, res) => {
             WHERE o.id = ?`;
 
         const [rows] = await db.execute(sql, [id]);
+        if (rows.length === 0) return res.status(404).json({ success: false, message: 'Pesanan tidak ditemukan' });
 
-        if (rows.length === 0) {
-            console.log(`❌ [LOG] Order ID ${id} tidak ditemukan.`);
-            return res.status(404).json({ success: false, message: 'Pesanan tidak ditemukan' });
+        if (rows[0].proof_image_url && !rows[0].proof_image_url.startsWith('http')) {
+            rows[0].proof_image_url = `${req.protocol}://${req.get('host')}/${rows[0].proof_image_url.replace(/\\/g, '/')}`;
         }
 
-        console.log(`✅ [LOG] Data dikirim ke Client. Status: ${rows[0].status}`);
         res.status(200).json({ success: true, data: rows[0] });
     } catch (error) {
-        console.error(`🔥 [ERROR] getOrderDetail:`, error.message);
         res.status(500).json({ success: false, error: error.message });
     }
 };
@@ -122,34 +133,19 @@ exports.getOrderDetail = async (req, res) => {
 exports.getUserOrders = async (req, res) => {
     try {
         const { userId } = req.params;
-
         const sql = `
-            SELECT 
-                o.id, 
-                o.status, 
-                o.total_price, 
-                o.scheduled_date, 
-                o.scheduled_time,
-                o.order_date,
-                s.store_name as mitra_name 
+            SELECT o.id, o.status, o.total_price, o.scheduled_date, o.scheduled_time, o.order_date, s.store_name as mitra_name 
             FROM orders o
             JOIN stores s ON o.store_id = s.id
             WHERE o.customer_id = ?
-            ORDER BY o.order_date DESC`; // <--- Ubah ke order_date
-
+            ORDER BY o.order_date DESC`;
         const [rows] = await db.execute(sql, [userId]);
-
-        res.status(200).json({
-            success: true,
-            data: rows
-        });
+        res.status(200).json({ success: true, data: rows });
     } catch (error) {
-        console.error("❌ Error getUserOrders:", error.message);
         res.status(500).json({ success: false, error: error.message });
     }
 };
 
-// Update status oleh MITRA
 exports.updateOrderStatus = async (req, res) => {
     const { id } = req.params;
     const { status } = req.body;
@@ -189,35 +185,50 @@ exports.customerCompleteOrder = async (req, res) => {
     try {
         await connection.beginTransaction();
 
-        // 1. Pastikan status order jadi completed
-        await connection.execute("UPDATE orders SET status = 'completed' WHERE id = ?", [id]);
+        // 1. Ambil data order & validasi
+        const [orderData] = await connection.execute("SELECT customer_id, store_id, status FROM orders WHERE id = ?", [id]);
+        if (orderData.length === 0) throw new Error("Order tidak ditemukan");
 
-        // 2. Simpan Review
-        const [orderData] = await connection.execute("SELECT customer_id, store_id FROM orders WHERE id = ?", [id]);
+        // Jika status sudah completed, mungkin review sudah ada, tapi kita izinkan lanjut untuk update rating jika perlu
         const { customer_id, store_id } = orderData[0];
+
+        // 2. Simpan ke tabel reviews (Gunakan COALESCE/Default value)
+        const finalRating = parseInt(rating) || 5;
+        const q = parseInt(quality) || 5;
+        const p = parseInt(punctuality) || 5;
+        const c = parseInt(communication) || 5;
 
         await connection.execute(
             `INSERT INTO reviews (order_id, customer_id, store_id, rating, rating_quality, rating_punctuality, rating_communication, comment) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-            [id, customer_id, store_id, rating, quality || 5, punctuality || 5, communication || 5, comment]
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?) 
+             ON DUPLICATE KEY UPDATE rating = ?, comment = ?`,
+            [id, customer_id, store_id, finalRating, q, p, c, comment || "", finalRating, comment || ""]
         );
 
-        // 3. Update Store Rating (Rata-rata)
+        // 3. Update Status Order ke Completed
+        await connection.execute("UPDATE orders SET status = 'completed' WHERE id = ?", [id]);
+
+        // 4. Update Store Rating (Rata-rata)
         await connection.execute(
-            `UPDATE stores SET average_rating = (SELECT AVG(rating) FROM reviews WHERE store_id = ?), 
-             total_reviews = total_reviews + 1 WHERE id = ?`, [store_id, store_id]
+            `UPDATE stores 
+             SET average_rating = (SELECT COALESCE(AVG(rating), 0) FROM reviews WHERE store_id = ?), 
+                 total_reviews = (SELECT COUNT(*) FROM reviews WHERE store_id = ?) 
+             WHERE id = ?`,
+            [store_id, store_id, store_id]
         );
 
-        // 4. CAIRKAN DANA
+        // 5. CAIRKAN DANA KE WALLET MITRA (Sudah aman dengan fitur Auto-Create Wallet)
         await releaseFundsToMitra(connection, id);
 
         await connection.commit();
-        res.status(200).json({ success: true, message: "Dana telah diteruskan ke mitra. Terima kasih!" });
+        res.status(200).json({ success: true, message: "Pesanan selesai & rating tersimpan." });
     } catch (error) {
         await connection.rollback();
-        res.status(500).json({ success: false, error: error.message });
-    } finally { connection.release(); }
+        console.error("🔥 Error Rating & Completion:", error.message);
+        res.status(500).json({ success: false, message: error.message });
+    } finally {
+        connection.release();
+    }
 };
 
-// Export helper untuk Cron Job
 exports.internalReleaseFunds = releaseFundsToMitra;

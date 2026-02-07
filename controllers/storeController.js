@@ -12,17 +12,21 @@ exports.updateStoreProfile = async (req, res) => {
         bank_name,
         bank_account_number,
         operating_hours,
-        description,      // <--- Tambahkan ini
-        store_logo_url    // <--- Tambahkan ini
+        description,
+        store_logo_url
     } = req.body;
 
     try {
-        const [existing] = await db.query('SELECT id FROM stores WHERE id = ?', [id]);
+        const [existing] = await db.query('SELECT id, approval_status FROM stores WHERE id = ?', [id]);
         if (existing.length === 0) {
             return res.status(404).json({ message: "Data toko tidak ditemukan." });
         }
 
-        // Update Query dengan tambahan description dan store_logo_url
+        /**
+         * PERUBAHAN DI SINI:
+         * Menghapus 'approval_status = pending' dan 'is_active = 0'
+         * agar toko tetap bisa berjualan setelah update profil.
+         */
         const query = `
             UPDATE stores SET 
                 identity_number = ?, 
@@ -35,9 +39,7 @@ exports.updateStoreProfile = async (req, res) => {
                 longitude = ?, 
                 bank_name = ?, 
                 bank_account_number = ?,
-                operating_hours = ?,
-                approval_status = 'pending',
-                is_active = 0
+                operating_hours = ?
             WHERE id = ?
         `;
 
@@ -45,8 +47,8 @@ exports.updateStoreProfile = async (req, res) => {
             identity_number,
             store_name,
             category,
-            description,      // Bind value deskripsi
-            store_logo_url,    // Bind value logo
+            description,
+            store_logo_url,
             address,
             latitude,
             longitude,
@@ -57,7 +59,7 @@ exports.updateStoreProfile = async (req, res) => {
         ]);
 
         res.json({
-            message: "Profil berhasil dikirim, menunggu verifikasi admin.",
+            message: "Profil toko berhasil diperbarui.",
             success: true
         });
 
@@ -70,8 +72,6 @@ exports.updateStoreProfile = async (req, res) => {
     }
 };
 
-// Fungsi ini bisa tetap ada sebagai alias atau dihapus jika route sudah diarahkan ke updateStoreProfile
 exports.completeMitraProfile = async (req, res) => {
-    // Memanggil fungsi di atas agar logika tetap satu pintu
     return exports.updateStoreProfile(req, res);
 };
