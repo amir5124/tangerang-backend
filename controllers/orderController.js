@@ -119,20 +119,32 @@ exports.getOrderDetail = async (req, res) => {
     }
 };
 
-// Di orderController.js
 exports.getUserOrders = async (req, res) => {
     try {
         const { userId } = req.params;
+
         const sql = `
-            SELECT o.*, s.store_name, m.full_name as mitra_name 
+            SELECT 
+                o.id, 
+                o.status, 
+                o.total_price, 
+                o.scheduled_date, 
+                o.scheduled_time,
+                s.store_name as mitra_name 
             FROM orders o
             JOIN stores s ON o.store_id = s.id
-            JOIN users m ON s.user_id = m.id
-            WHERE o.customer_id = ? 
+            WHERE o.customer_id = ?
             ORDER BY o.created_at DESC`;
+
         const [rows] = await db.execute(sql, [userId]);
-        res.status(200).json({ success: true, data: rows });
+
+        res.status(200).json({
+            success: true,
+            message: "Daftar riwayat berhasil diambil",
+            data: rows
+        });
     } catch (error) {
+        console.error("❌ Error getUserOrders:", error.message);
         res.status(500).json({ success: false, error: error.message });
     }
 };

@@ -16,6 +16,8 @@ const upload = multer({ storage: storage });
 // --- ENDPOINT YANG SUDAH ADA ---
 router.post('/create', orderController.createOrder);
 router.get('/detail/:id', orderController.getOrderDetail);
+// Ambil semua order berdasarkan ID user (Customer)
+router.get('/user/:userId', orderController.getUserOrders);
 
 // --- ENDPOINT MITRA ---
 // Digunakan mitra untuk update status (Accepted, OTW, Working, Completed)
