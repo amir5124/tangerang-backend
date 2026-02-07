@@ -185,47 +185,44 @@ exports.customerCompleteOrder = async (req, res) => {
     try {
         await connection.beginTransaction();
 
-        // 1. Ambil data order & validasi
-        const [orderData] = await connection.execute("SELECT customer_id, store_id, status FROM orders WHERE id = ?", [id]);
-        if (orderData.length === 0) throw new Error("Order tidak ditemukan");
+        // 1. Ambil data order
+        const [orderData] = await connection.execute("SELECT status FROM orders WHERE id = ?", [id]);
 
-        // Jika status sudah completed, mungkin review sudah ada, tapi kita izinkan lanjut untuk update rating jika perlu
-        const { customer_id, store_id } = orderData[0];
+        // PROTEKSI: Jika status sudah 'completed', jangan cairkan dana lagi!
+        const isAlreadyCompleted = orderData[0]?.status === 'completed';
 
-        // 2. Simpan ke tabel reviews (Gunakan COALESCE/Default value)
-        const finalRating = parseInt(rating) || 5;
-        const q = parseInt(quality) || 5;
-        const p = parseInt(punctuality) || 5;
-        const c = parseInt(communication) || 5;
-
+        // 2. Simpan/Update Review (Sekarang ON DUPLICATE KEY akan bekerja karena sudah ada UNIQUE constraint)
         await connection.execute(
             `INSERT INTO reviews (order_id, customer_id, store_id, rating, rating_quality, rating_punctuality, rating_communication, comment) 
              VALUES (?, ?, ?, ?, ?, ?, ?, ?) 
              ON DUPLICATE KEY UPDATE rating = ?, comment = ?`,
-            [id, customer_id, store_id, finalRating, q, p, c, comment || "", finalRating, comment || ""]
+            [id, customer_id, store_id, finalRating, q, p, c, comment, finalRating, comment]
         );
 
-        // 3. Update Status Order ke Completed
+        // 3. Update Status Order
         await connection.execute("UPDATE orders SET status = 'completed' WHERE id = ?", [id]);
 
-        // 4. Update Store Rating (Rata-rata)
+        // 4. Update Rating Toko
         await connection.execute(
-            `UPDATE stores 
-             SET average_rating = (SELECT COALESCE(AVG(rating), 0) FROM reviews WHERE store_id = ?), 
-                 total_reviews = (SELECT COUNT(*) FROM reviews WHERE store_id = ?) 
-             WHERE id = ?`,
-            [store_id, store_id, store_id]
+            `UPDATE stores SET 
+             average_rating = (SELECT AVG(rating) FROM reviews WHERE store_id = ?), 
+             total_reviews = (SELECT COUNT(*) FROM reviews WHERE store_id = ?) 
+             WHERE id = ?`, [store_id, store_id, store_id]
         );
 
-        // 5. CAIRKAN DANA KE WALLET MITRA (Sudah aman dengan fitur Auto-Create Wallet)
-        await releaseFundsToMitra(connection, id);
+        // 5. CAIRKAN DANA HANYA JIKA SEBELUMNYA BELUM COMPLETED
+        if (!isAlreadyCompleted) {
+            await releaseFundsToMitra(connection, id);
+            console.log(`💰 Dana dicairkan untuk Order #${id}`);
+        } else {
+            console.log(`ℹ️ Order #${id} sudah pernah cair, hanya update review.`);
+        }
 
         await connection.commit();
-        res.status(200).json({ success: true, message: "Pesanan selesai & rating tersimpan." });
+        res.status(200).json({ success: true, message: "Review berhasil diproses." });
     } catch (error) {
         await connection.rollback();
-        console.error("🔥 Error Rating & Completion:", error.message);
-        res.status(500).json({ success: false, message: error.message });
+        res.status(500).json({ error: error.message });
     } finally {
         connection.release();
     }
