@@ -233,11 +233,25 @@ exports.customerCompleteOrder = async (req, res) => {
 
         // 6. LOGIKA PENCAIRAN DANA YANG AMAN
         // Dana HANYA dicairkan jika ini adalah pertama kalinya order diselesaikan
+        // Tambahkan ini di dalam blok "if (!isAlreadyCompleted)"
         if (!isAlreadyCompleted) {
             await releaseFundsToMitra(connection, id);
-            console.log(`💰 [SUCCESS] Dana dicairkan untuk Order #${id}`);
-        } else {
-            console.log(`ℹ️ [SKIP] Order #${id} sudah berstatus completed sebelumnya. Dana tidak dicairkan ulang.`);
+
+            // Kirim Notifikasi ke Mitra
+            const [mitraInfo] = await connection.execute(
+                `SELECT u.fcm_token FROM stores s 
+         JOIN users u ON s.user_id = u.id 
+         WHERE s.id = ?`, [store_id]
+            );
+
+            if (mitraInfo[0]?.fcm_token) {
+                sendPushNotification(
+                    mitraInfo[0].fcm_token,
+                    "Dana Masuk!",
+                    `Penghasilan dari Order #${id} telah masuk ke dompet Anda.`,
+                    { type: 'wallet_update' }
+                );
+            }
         }
 
         await connection.commit();
