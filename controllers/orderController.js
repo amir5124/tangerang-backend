@@ -178,51 +178,82 @@ exports.updateOrderStatus = async (req, res) => {
 
 // Selesaikan dan Rating oleh CUSTOMER (Mencairkan Dana)
 exports.customerCompleteOrder = async (req, res) => {
-    const { id } = req.params;
+    const { id } = req.params; // ID Order
     const { rating, comment, quality, punctuality, communication } = req.body;
     const connection = await db.getConnection();
 
     try {
         await connection.beginTransaction();
 
-        // 1. Ambil data order
-        const [orderData] = await connection.execute("SELECT status FROM orders WHERE id = ?", [id]);
-
-        // PROTEKSI: Jika status sudah 'completed', jangan cairkan dana lagi!
-        const isAlreadyCompleted = orderData[0]?.status === 'completed';
-
-        // 2. Simpan/Update Review (Sekarang ON DUPLICATE KEY akan bekerja karena sudah ada UNIQUE constraint)
-        await connection.execute(
-            `INSERT INTO reviews (order_id, customer_id, store_id, rating, rating_quality, rating_punctuality, rating_communication, comment) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?) 
-             ON DUPLICATE KEY UPDATE rating = ?, comment = ?`,
-            [id, customer_id, store_id, finalRating, q, p, c, comment, finalRating, comment]
+        // 1. Ambil data order secara mendalam untuk validasi
+        const [orderData] = await connection.execute(
+            "SELECT customer_id, store_id, status FROM orders WHERE id = ?",
+            [id]
         );
 
-        // 3. Update Status Order
+        if (orderData.length === 0) {
+            throw new Error("Order tidak ditemukan");
+        }
+
+        const { customer_id, store_id, status } = orderData[0];
+        const isAlreadyCompleted = status === 'completed';
+
+        // 2. Normalisasi input rating agar selalu berupa angka (Integer)
+        const finalRating = parseInt(rating) || 5;
+        const q = parseInt(quality) || 5;
+        const p = parseInt(punctuality) || 5;
+        const c = parseInt(communication) || 5;
+
+        // 3. Simpan atau Perbarui Review (Atomic Update)
+        // UNIQUE(order_id) di database akan memicu bagian ON DUPLICATE KEY
+        await connection.execute(
+            `INSERT INTO reviews 
+                (order_id, customer_id, store_id, rating, rating_quality, rating_punctuality, rating_communication, comment) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE 
+                rating = VALUES(rating),
+                rating_quality = VALUES(rating_quality),
+                rating_punctuality = VALUES(rating_punctuality),
+                rating_communication = VALUES(rating_communication),
+                comment = VALUES(comment)`,
+            [id, customer_id, store_id, finalRating, q, p, c, comment || ""]
+        );
+
+        // 4. Update Status Order menjadi 'completed'
         await connection.execute("UPDATE orders SET status = 'completed' WHERE id = ?", [id]);
 
-        // 4. Update Rating Toko
+        // 5. Update Rating Akumulatif di Tabel Stores
         await connection.execute(
             `UPDATE stores SET 
-             average_rating = (SELECT AVG(rating) FROM reviews WHERE store_id = ?), 
+             average_rating = (SELECT COALESCE(AVG(rating), 0) FROM reviews WHERE store_id = ?), 
              total_reviews = (SELECT COUNT(*) FROM reviews WHERE store_id = ?) 
-             WHERE id = ?`, [store_id, store_id, store_id]
+             WHERE id = ?`,
+            [store_id, store_id, store_id]
         );
 
-        // 5. CAIRKAN DANA HANYA JIKA SEBELUMNYA BELUM COMPLETED
+        // 6. LOGIKA PENCAIRAN DANA YANG AMAN
+        // Dana HANYA dicairkan jika ini adalah pertama kalinya order diselesaikan
         if (!isAlreadyCompleted) {
             await releaseFundsToMitra(connection, id);
-            console.log(`💰 Dana dicairkan untuk Order #${id}`);
+            console.log(`💰 [SUCCESS] Dana dicairkan untuk Order #${id}`);
         } else {
-            console.log(`ℹ️ Order #${id} sudah pernah cair, hanya update review.`);
+            console.log(`ℹ️ [SKIP] Order #${id} sudah berstatus completed sebelumnya. Dana tidak dicairkan ulang.`);
         }
 
         await connection.commit();
-        res.status(200).json({ success: true, message: "Review berhasil diproses." });
+        res.status(200).json({
+            success: true,
+            message: isAlreadyCompleted ? "Ulasan diperbarui." : "Pesanan selesai dan dana dicairkan."
+        });
+
     } catch (error) {
         await connection.rollback();
-        res.status(500).json({ error: error.message });
+        console.error("🔥 [Error customerCompleteOrder]:", error.message);
+        res.status(500).json({
+            success: false,
+            message: "Gagal memproses ulasan",
+            error: error.message
+        });
     } finally {
         connection.release();
     }
