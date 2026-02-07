@@ -119,6 +119,24 @@ exports.getOrderDetail = async (req, res) => {
     }
 };
 
+// Di orderController.js
+exports.getUserOrders = async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const sql = `
+            SELECT o.*, s.store_name, m.full_name as mitra_name 
+            FROM orders o
+            JOIN stores s ON o.store_id = s.id
+            JOIN users m ON s.user_id = m.id
+            WHERE o.customer_id = ? 
+            ORDER BY o.created_at DESC`;
+        const [rows] = await db.execute(sql, [userId]);
+        res.status(200).json({ success: true, data: rows });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
+
 // Update status oleh MITRA
 exports.updateOrderStatus = async (req, res) => {
     const { id } = req.params;
