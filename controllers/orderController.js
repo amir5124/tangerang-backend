@@ -130,17 +130,17 @@ exports.getUserOrders = async (req, res) => {
                 o.total_price, 
                 o.scheduled_date, 
                 o.scheduled_time,
+                o.order_date,
                 s.store_name as mitra_name 
             FROM orders o
             JOIN stores s ON o.store_id = s.id
             WHERE o.customer_id = ?
-            ORDER BY o.created_at DESC`;
+            ORDER BY o.order_date DESC`; // <--- Ubah ke order_date
 
         const [rows] = await db.execute(sql, [userId]);
 
         res.status(200).json({
             success: true,
-            message: "Daftar riwayat berhasil diambil",
             data: rows
         });
     } catch (error) {
