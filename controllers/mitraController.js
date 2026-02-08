@@ -134,3 +134,68 @@ exports.deleteMitra = async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 };
+
+// --- NEW DASHBOARD FUNCTION ---
+
+exports.getMitraDashboard = async (req, res) => {
+    const { id } = req.params; // Ini adalah store_id
+
+    try {
+        // 1. Ambil data toko & User ID
+        const [store] = await db.query("SELECT user_id, store_name FROM stores WHERE id = ?", [id]);
+        if (store.length === 0) return res.status(404).json({ message: "Mitra tidak ditemukan" });
+
+        const userId = store[0].user_id;
+
+        // 2. Ambil Saldo Wallet
+        const [wallet] = await db.query("SELECT balance FROM wallets WHERE user_id = ?", [userId]);
+        const balance = wallet.length > 0 ? wallet[0].balance : 0;
+
+        // 3. Hitung Statistik Order (Pendapatan & Total Selesai)
+        const [orderStats] = await db.query(`
+            SELECT 
+                SUM(CASE WHEN status = 'completed' THEN total_price ELSE 0 END) as total_revenue,
+                COUNT(CASE WHEN status = 'completed' THEN 1 END) as completed_jobs,
+                SUM(CASE WHEN status = 'pending' OR status = 'accepted' OR status = 'working' THEN 1 ELSE 0 END) as active_jobs
+            FROM orders 
+            WHERE store_id = ?`, [id]);
+
+        // 4. Hitung Rata-rata Rating & Total Review
+        const [reviewStats] = await db.query(`
+            SELECT 
+                AVG(rating) as avg_rating, 
+                COUNT(id) as total_reviews 
+            FROM reviews 
+            WHERE store_id = ?`, [id]);
+
+        // 5. Ambil 5 Ulasan Terbaru (Opsional untuk Dashboard)
+        const [recentReviews] = await db.query(`
+            SELECT r.*, u.full_name as customer_name 
+            FROM reviews r
+            JOIN users u ON r.customer_id = u.id
+            WHERE r.store_id = ?
+            ORDER BY r.created_at DESC
+            LIMIT 5`, [id]);
+
+        // Kirim response gabungan
+        res.json({
+            success: true,
+            data: {
+                store_name: store[0].store_name,
+                stats: {
+                    balance: parseFloat(balance || 0),
+                    revenue: parseFloat(orderStats[0].total_revenue || 0),
+                    completed_jobs: orderStats[0].completed_jobs,
+                    active_jobs: orderStats[0].active_jobs,
+                    rating: parseFloat(reviewStats[0].avg_rating || 0).toFixed(1),
+                    total_reviews: reviewStats[0].total_reviews
+                },
+                recent_reviews: recentReviews
+            }
+        });
+
+    } catch (err) {
+        console.error("❌ [Dashboard Data Error]:", err.message);
+        res.status(500).json({ success: false, error: err.message });
+    }
+};

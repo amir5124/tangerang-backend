@@ -24,6 +24,8 @@ const upload = multer({
 router.get('/', mitraController.getAllMitra);
 router.get('/:id', mitraController.getMitraDetail);
 
+router.get('/dashboard/:id', mitraController.getMitraDashboard);
+
 // --- KELOMPOK 2: MITRA MANAGEMENT ---
 
 // Ambil Profil
