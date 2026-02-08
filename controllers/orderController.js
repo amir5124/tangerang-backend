@@ -152,6 +152,8 @@ exports.updateOrderStatus = async (req, res) => {
     const connection = await db.getConnection();
     try {
         await connection.beginTransaction();
+
+        // Ambil data fcm dan nama untuk notif
         const [orderData] = await connection.execute(
             `SELECT u.fcm_token, m.full_name as mitra_name FROM orders o 
              JOIN users u ON o.customer_id = u.id JOIN stores s ON o.store_id = s.id
@@ -159,6 +161,7 @@ exports.updateOrderStatus = async (req, res) => {
         );
 
         await connection.execute("UPDATE orders SET status = ? WHERE id = ?", [status, id]);
+
         if (status === 'completed' && req.file) {
             await connection.execute("UPDATE orders SET proof_image_url = ? WHERE id = ?", [req.file.path, id]);
         }
@@ -168,12 +171,35 @@ exports.updateOrderStatus = async (req, res) => {
 
         await connection.commit();
 
+        // --- BAGIAN YANG DIPERBAIKI ---
         if (orderData[0]?.fcm_token) {
-            sendPushNotification(orderData[0].fcm_token, "Update Pesanan", `Status pesanan Anda kini: ${status}`, { orderId: id });
+            const statusMap = {
+                'accepted': 'telah diterima',
+                'on_the_way': 'sedang menuju lokasi Anda 🛵',
+                'working': 'sedang dikerjakan 🛠️',
+                'completed': 'telah selesai dikerjakan ✅'
+            };
+
+            const statusText = statusMap[status] || status;
+
+            sendPushNotification(
+                orderData[0].fcm_token,
+                "Update Pesanan",
+                `Halo, pesanan Anda ${statusText}`,
+                {
+                    orderId: String(id),
+                    type: "STATUS_UPDATE", // Kunci untuk auto-refresh di RN
+                    newStatus: status
+                }
+            );
         }
         res.status(200).json({ success: true });
-    } catch (error) { await connection.rollback(); res.status(500).json({ error: error.message }); }
-    finally { connection.release(); }
+    } catch (error) {
+        await connection.rollback();
+        res.status(500).json({ error: error.message });
+    } finally {
+        connection.release();
+    }
 };
 
 // Selesaikan dan Rating oleh CUSTOMER (Mencairkan Dana)
@@ -247,9 +273,12 @@ exports.customerCompleteOrder = async (req, res) => {
             if (mitraInfo[0]?.fcm_token) {
                 sendPushNotification(
                     mitraInfo[0].fcm_token,
-                    "Dana Masuk!",
-                    `Penghasilan dari Order #${id} telah masuk ke dompet Anda.`,
-                    { type: 'wallet_update' }
+                    "Dana Masuk! 💰",
+                    `Penghasilan telah masuk ke dompet Anda.`,
+                    {
+                        type: 'WALLET_UPDATE', // Kunci agar app mitra refresh saldo
+                        orderId: String(id)
+                    }
                 );
             }
         }
