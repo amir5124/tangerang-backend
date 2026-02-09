@@ -9,7 +9,9 @@ const pool = mysql.createPool({
     port: 32771,
     waitForConnections: true,
     connectionLimit: 10,
-    queueLimit: 0
+    queueLimit: 0,
+    timezone: '+07:00',
+    dateStrings: true,
 });
 
 // Cek koneksi saat server nyala
