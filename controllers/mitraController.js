@@ -29,22 +29,24 @@ exports.getMitraDashboard = async (req, res) => {
         // 2. QUERY DETAIL ORDER TERBARU
         // Menggabungkan orders dengan users (customer) dan services
         const recentOrdersQuery = `
-            SELECT 
-                o.id as order_id,
-                o.total_price,
-                o.status,
-                o.scheduled_date,
-                o.scheduled_time,
-                u.full_name as customer_name,
-                u.phone_number as customer_phone,
-                sv.service_name
-            FROM orders o
-            JOIN users u ON o.customer_id = u.id
-            LEFT JOIN services sv ON o.service_id = sv.id
-            WHERE o.store_id = ?
-            ORDER BY o.order_date DESC
-            LIMIT 5
-        `;
+        SELECT 
+            o.id as order_id,
+            o.total_price,
+            o.status,
+            o.scheduled_date,
+            o.scheduled_time,
+            u.full_name as customer_name,
+            u.phone_number as customer_phone,
+            -- Ambil satu nama layanan saja untuk ringkasan di dashboard
+            (SELECT service_name FROM order_items WHERE order_id = o.id LIMIT 1) as service_name,
+            -- Atau jika ingin tahu total item
+            (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as total_items
+        FROM orders o
+        JOIN users u ON o.customer_id = u.id
+        WHERE o.store_id = ?
+        ORDER BY o.order_date DESC
+        LIMIT 5
+    `;
 
         const [statsResults] = await db.query(statsQuery, [id]);
         const [ordersResults] = await db.query(recentOrdersQuery, [id]);
