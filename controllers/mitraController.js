@@ -8,20 +8,15 @@ exports.getMitraDashboard = async (req, res) => {
     const { id } = req.params; // store_id
 
     try {
-        const query = `
+        // 1. QUERY STATISTIK (Sama seperti sebelumnya)
+        const statsQuery = `
             SELECT 
                 s.store_name,
-                -- Ambil saldo (MAX digunakan untuk menghindari error ONLY_FULL_GROUP_BY)
                 IFNULL(MAX(w.balance), 0) as balance,
-                -- Hitung total pendapatan dari order yang 'completed'
                 IFNULL(SUM(CASE WHEN o.status = 'completed' THEN o.total_price ELSE 0 END), 0) as revenue,
-                -- Hitung pekerjaan yang sudah selesai
                 COUNT(CASE WHEN o.status = 'completed' THEN 1 END) as completed_jobs,
-                -- Hitung pekerjaan yang sedang aktif
                 COUNT(CASE WHEN o.status IN ('pending', 'accepted', 'on_the_way', 'working') THEN 1 END) as active_jobs,
-                -- Hitung rata-rata rating
                 IFNULL(AVG(r.rating), 0) as avg_rating,
-                -- Hitung total ulasan (DISTINCT untuk menghindari duplikasi akibat JOIN)
                 COUNT(DISTINCT r.id) as total_reviews
             FROM stores s
             LEFT JOIN wallets w ON s.user_id = w.user_id
@@ -31,24 +26,48 @@ exports.getMitraDashboard = async (req, res) => {
             GROUP BY s.id
         `;
 
-        const [results] = await db.query(query, [id]);
+        // 2. QUERY DETAIL ORDER TERBARU
+        // Menggabungkan orders dengan users (customer) dan services
+        const recentOrdersQuery = `
+            SELECT 
+                o.id as order_id,
+                o.total_price,
+                o.status,
+                o.scheduled_date,
+                o.scheduled_time,
+                u.full_name as customer_name,
+                u.phone_number as customer_phone,
+                sv.service_name
+            FROM orders o
+            JOIN users u ON o.customer_id = u.id
+            LEFT JOIN services sv ON o.service_id = sv.id
+            WHERE o.store_id = ?
+            ORDER BY o.order_date DESC
+            LIMIT 5
+        `;
 
-        if (results.length === 0) {
+        const [statsResults] = await db.query(statsQuery, [id]);
+        const [ordersResults] = await db.query(recentOrdersQuery, [id]);
+
+        if (statsResults.length === 0) {
             return res.status(404).json({ success: false, message: "Mitra tidak ditemukan" });
         }
 
-        const stats = results[0];
+        const stats = statsResults[0];
 
         res.json({
             success: true,
             data: {
                 store_name: stats.store_name,
-                balance: parseFloat(stats.balance),
-                revenue: parseFloat(stats.revenue),
-                completed_jobs: stats.completed_jobs,
-                active_jobs: stats.active_jobs,
-                rating: parseFloat(stats.avg_rating).toFixed(1),
-                total_reviews: stats.total_reviews
+                stats: {
+                    balance: parseFloat(stats.balance),
+                    revenue: parseFloat(stats.revenue),
+                    completed_jobs: stats.completed_jobs,
+                    active_jobs: stats.active_jobs,
+                    rating: parseFloat(stats.avg_rating).toFixed(1),
+                    total_reviews: stats.total_reviews
+                },
+                recent_orders: ordersResults // Daftar pesanan detail
             }
         });
 
