@@ -18,7 +18,7 @@ const releaseFundsToMitra = async (connection, orderId) => {
     const { total_price, platform_fee, mitra_user_id } = order[0];
 
     // Net amount yang diterima mitra (Total - Biaya Aplikasi)
-    const netAmount = parseFloat(total_price) - parseFloat(platform_fee);
+    const netAmount = (parseFloat(total_price) || 0) - (parseFloat(platform_fee) || 0);
 
     // 2. CEK / BUAT WALLET (Upsert Logic)
     // Cek apakah wallet sudah ada
@@ -150,58 +150,69 @@ exports.updateOrderStatus = async (req, res) => {
     const { id } = req.params;
     const { status } = req.body;
     const connection = await db.getConnection();
+
     try {
         await connection.beginTransaction();
 
-        // Ambil data fcm dan nama untuk notif
-        const [orderData] = await connection.execute(
-            `SELECT u.fcm_token, m.full_name as mitra_name FROM orders o 
-             JOIN users u ON o.customer_id = u.id JOIN stores s ON o.store_id = s.id
-             JOIN users m ON s.user_id = m.id WHERE o.id = ?`, [id]
+        // 1. Cek status saat ini (Mencegah Double Update/Status Mundur)
+        const [currentOrder] = await connection.execute(
+            "SELECT status FROM orders WHERE id = ?", [id]
         );
 
+        if (currentOrder.length === 0) return res.status(404).json({ message: "Order tidak ditemukan" });
+
+        // Contoh: Jika sudah 'on_the_way', jangan boleh balik ke 'pending'
+        if (currentOrder[0].status === 'completed') {
+            return res.status(400).json({ message: "Order sudah selesai, tidak bisa diubah." });
+        }
+
+        // 2. Update status
         await connection.execute("UPDATE orders SET status = ? WHERE id = ?", [status, id]);
 
         if (status === 'completed' && req.file) {
             await connection.execute("UPDATE orders SET proof_image_url = ? WHERE id = ?", [req.file.path, id]);
         }
 
-        await connection.execute("INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, ?, ?)",
-            [id, status, `Status diperbarui oleh mitra`]);
+        await connection.execute(
+            "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, ?, ?)",
+            [id, status, `Status diperbarui ke ${status}`]
+        );
+
+        // 3. Ambil data notifikasi sebelum commit
+        const [orderData] = await connection.execute(
+            `SELECT u.fcm_token FROM orders o 
+             JOIN users u ON o.customer_id = u.id WHERE o.id = ?`, [id]
+        );
 
         await connection.commit();
 
-        // --- BAGIAN YANG DIPERBAIKI ---
+        // 4. Kirim response DULU ke frontend agar tidak macet (Klik lancar)
+        res.status(200).json({ success: true, message: `Status berhasil diubah ke ${status}` });
+
+        // 5. Kirim Notifikasi di "Background" (Tanpa await res)
         if (orderData[0]?.fcm_token) {
             const statusMap = {
-                'accepted': 'telah diterima',
+                'accepted': 'telah diterima oleh teknisi',
                 'on_the_way': 'sedang menuju lokasi Anda 🛵',
                 'working': 'sedang dikerjakan 🛠️',
                 'completed': 'telah selesai dikerjakan ✅'
             };
 
-            const statusText = statusMap[status] || status;
-
             sendPushNotification(
                 orderData[0].fcm_token,
                 "Update Pesanan",
-                `Halo, pesanan Anda ${statusText}`,
-                {
-                    orderId: String(id),
-                    type: "STATUS_UPDATE", // Kunci untuk auto-refresh di RN
-                    newStatus: status
-                }
-            );
+                `Pesanan Anda ${statusMap[status] || status}`,
+                { orderId: String(id), type: "STATUS_UPDATE", newStatus: status }
+            ).catch(err => console.log("Notif Error:", err)); // Agar tidak crash
         }
-        res.status(200).json({ success: true });
+
     } catch (error) {
         await connection.rollback();
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ success: false, error: error.message });
     } finally {
         connection.release();
     }
 };
-
 // Selesaikan dan Rating oleh CUSTOMER (Mencairkan Dana)
 exports.customerCompleteOrder = async (req, res) => {
     const { id } = req.params; // ID Order
