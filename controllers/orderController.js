@@ -154,7 +154,6 @@ exports.updateOrderStatus = async (req, res) => {
     try {
         await connection.beginTransaction();
 
-        // 1. Ambil data Order & Customer FCM
         const [orderData] = await connection.execute(
             `SELECT o.status, u.fcm_token, u.full_name 
              FROM orders o 
@@ -168,14 +167,11 @@ exports.updateOrderStatus = async (req, res) => {
         }
 
         const customerFcm = orderData[0].fcm_token;
-        const currentStatus = orderData[0].status;
-
-        if (currentStatus === 'completed') {
+        if (orderData[0].status === 'completed') {
             await connection.rollback();
             return res.status(400).json({ message: "Order sudah selesai." });
         }
 
-        // 2. Update status ke Database
         await connection.execute("UPDATE orders SET status = ? WHERE id = ?", [status, id]);
         await connection.execute(
             "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, ?, ?)",
@@ -184,7 +180,6 @@ exports.updateOrderStatus = async (req, res) => {
 
         await connection.commit();
 
-        // 3. Kirim Notifikasi (Penting: Format harus lengkap agar muncul di HP)
         if (customerFcm) {
             const statusMap = {
                 'accepted': 'telah diterima oleh teknisi',
@@ -194,20 +189,19 @@ exports.updateOrderStatus = async (req, res) => {
             };
 
             const title = "Update Pesanan 🔔";
-            const body = `Halo ${orderData[0].full_name || 'Customer'}, pesanan Anda ${statusMap[status] || status}`;
+            const body = `Halo ${orderData[0].full_name}, pesanan Anda ${statusMap[status] || status}`;
 
             try {
-                // Gunakan format payload yang memaksa sistem HP memunculkan notif
+                // PERBAIKAN DI SINI: Samakan key dengan yang ada di callback
                 await sendPushNotification(
                     customerFcm,
                     title,
                     body,
                     {
                         orderId: String(id),
-                        type: "STATUS_UPDATE",
-                        status: String(status),
-                        click_action: "FLUTTER_NOTIFICATION_CLICK", // Jika menggunakan Flutter
-                        sound: "default"
+                        type: "PAYMENT_SUCCESS", // COBA GUNAKAN TYPE INI (Jika app customer hanya filter type ini)
+                        status: String(status),  // Key status sangat penting
+                        click_action: "FLUTTER_NOTIFICATION_CLICK"
                     }
                 );
                 console.log(`✅ Notif [${status}] terkirim ke: ${orderData[0].full_name}`);
@@ -217,11 +211,9 @@ exports.updateOrderStatus = async (req, res) => {
         }
 
         return res.status(200).json({ success: true, message: `Status menjadi ${status}` });
-
     } catch (error) {
         if (connection) await connection.rollback();
-        console.error("🔥 Error:", error.message);
-        return res.status(500).json({ success: false, error: error.message });
+        res.status(500).json({ success: false, error: error.message });
     } finally {
         connection.release();
     }
