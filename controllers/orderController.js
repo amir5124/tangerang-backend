@@ -154,7 +154,7 @@ exports.updateOrderStatus = async (req, res) => {
     try {
         await connection.beginTransaction();
 
-        // 1. Ambil data order DAN fcm_token customer sekaligus (LEBIH EFISIEN)
+        // 1. Ambil data Order & Customer FCM
         const [orderData] = await connection.execute(
             `SELECT o.status, u.fcm_token, u.full_name 
              FROM orders o 
@@ -167,69 +167,63 @@ exports.updateOrderStatus = async (req, res) => {
             return res.status(404).json({ message: "Order tidak ditemukan" });
         }
 
-        const currentStatus = orderData[0].status;
         const customerFcm = orderData[0].fcm_token;
+        const currentStatus = orderData[0].status;
 
         if (currentStatus === 'completed') {
             await connection.rollback();
             return res.status(400).json({ message: "Order sudah selesai." });
         }
 
-        // 2. Update status ke DB
+        // 2. Update status ke Database
         await connection.execute("UPDATE orders SET status = ? WHERE id = ?", [status, id]);
-
-        // Simpan log status
         await connection.execute(
             "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, ?, ?)",
-            [id, status, `Status diperbarui ke ${status} oleh Mitra`]
+            [id, status, `Status diperbarui ke ${status}`]
         );
 
         await connection.commit();
 
-        // 3. Mapping Pesan Notifikasi
-        const statusMap = {
-            'accepted': 'telah diterima oleh teknisi',
-            'on_the_way': 'sedang menuju lokasi Anda 🛵',
-            'working': 'sedang mulai mengerjakan pesanan Anda 🛠️',
-            'completed': 'telah selesai dikerjakan ✅'
-        };
-
-        const pesan = `Halo, pesanan Anda ${statusMap[status] || status}`;
-
-        // 4. KIRIM NOTIFIKASI SEBELUM RESPONSE (ATAU DENGAN AWAIT)
-        // Ini kunci agar tidak gagal di tengah jalan
+        // 3. Kirim Notifikasi (Penting: Format harus lengkap agar muncul di HP)
         if (customerFcm) {
+            const statusMap = {
+                'accepted': 'telah diterima oleh teknisi',
+                'on_the_way': 'sedang menuju lokasi Anda 🛵',
+                'working': 'sedang dikerjakan 🛠️',
+                'completed': 'telah selesai dikerjakan ✅'
+            };
+
+            const title = "Update Pesanan 🔔";
+            const body = `Halo ${orderData[0].full_name || 'Customer'}, pesanan Anda ${statusMap[status] || status}`;
+
             try {
+                // Gunakan format payload yang memaksa sistem HP memunculkan notif
                 await sendPushNotification(
                     customerFcm,
-                    "Update Pesanan 🔔",
-                    pesan,
+                    title,
+                    body,
                     {
                         orderId: String(id),
                         type: "STATUS_UPDATE",
-                        newStatus: status
+                        status: String(status),
+                        click_action: "FLUTTER_NOTIFICATION_CLICK", // Jika menggunakan Flutter
+                        sound: "default"
                     }
                 );
-                console.log(`✅ Notif Status ${status} terkirim ke Customer`);
+                console.log(`✅ Notif [${status}] terkirim ke: ${orderData[0].full_name}`);
             } catch (fcmErr) {
-                console.error("❌ Gagal kirim FCM di updateOrderStatus:", fcmErr.message);
+                console.error("❌ FCM Error:", fcmErr.message);
             }
-        } else {
-            console.log("⚠️ Customer tidak punya FCM Token");
         }
 
-        // 5. Kirim respon akhir ke Frontend
-        return res.status(200).json({
-            success: true,
-            message: `Status berhasil diubah ke ${status}`
-        });
+        return res.status(200).json({ success: true, message: `Status menjadi ${status}` });
 
     } catch (error) {
         if (connection) await connection.rollback();
-        console.error("🔥 Error di updateOrderStatus:", error);
+        console.error("🔥 Error:", error.message);
         return res.status(500).json({ success: false, error: error.message });
     } finally {
-        if (connection) connection.release();
+        connection.release();
     }
 };
 // Selesaikan dan Rating oleh CUSTOMER (Mencairkan Dana)
