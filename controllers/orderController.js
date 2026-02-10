@@ -6,17 +6,7 @@ const { sendPushNotification } = require('../services/notificationService');
  * UPDATE: Sekarang mendukung otomatis membuat wallet jika belum ada (Upsert)
  */
 const releaseFundsToMitra = async (connection, orderId) => {
-    // 1. Cek dulu apakah order ini SUDAH PERNAH dicairkan di history transaksi
-    const [checkHistory] = await connection.execute(
-        "SELECT id FROM wallet_transactions WHERE description LIKE ?",
-        [`%Order #${orderId}%`]
-    );
-
-    if (checkHistory.length > 0) {
-        console.log(`⚠️ Pencairan dibatalkan: Order #${orderId} sudah pernah dicairkan.`);
-        return; // Keluar jika sudah ada record
-    }
-
+    // 1. Ambil detail biaya dan ID User Mitra langsung dari tabel stores
     const [order] = await connection.execute(
         `SELECT o.total_price, o.platform_fee, s.user_id as mitra_user_id 
          FROM orders o 
@@ -26,24 +16,42 @@ const releaseFundsToMitra = async (connection, orderId) => {
 
     if (order.length === 0) return;
     const { total_price, platform_fee, mitra_user_id } = order[0];
+
+    // Net amount yang diterima mitra (Total - Biaya Aplikasi)
     const netAmount = (parseFloat(total_price) || 0) - (parseFloat(platform_fee) || 0);
 
-    // 2. Gunakan Transactional Update (Upsert)
-    await connection.execute(
-        "INSERT INTO wallets (user_id, balance) VALUES (?, ?) ON DUPLICATE KEY UPDATE balance = balance + ?",
-        [mitra_user_id, netAmount, netAmount]
+    // 2. CEK / BUAT WALLET (Upsert Logic)
+    // Cek apakah wallet sudah ada
+    const [walletCheck] = await connection.execute(
+        "SELECT id FROM wallets WHERE user_id = ?",
+        [mitra_user_id]
     );
 
-    // Ambil wallet_id yang baru saja diupdate/insert
-    const [w] = await connection.execute("SELECT id FROM wallets WHERE user_id = ?", [mitra_user_id]);
-    const walletId = w[0].id;
+    let walletId;
 
-    // 3. Catat history
+    if (walletCheck.length === 0) {
+        // Jika tidak ada, buat wallet baru
+        const [insertWallet] = await connection.execute(
+            "INSERT INTO wallets (user_id, balance) VALUES (?, ?)",
+            [mitra_user_id, netAmount]
+        );
+        walletId = insertWallet.insertId;
+    } else {
+        // Jika ada, update saldo yang sudah ada
+        await connection.execute(
+            "UPDATE wallets SET balance = balance + ? WHERE user_id = ?",
+            [netAmount, mitra_user_id]
+        );
+        walletId = walletCheck[0].id;
+    }
+
+    // 3. Catat history transaksi wallet
     await connection.execute(
         "INSERT INTO wallet_transactions (wallet_id, amount, type, description) VALUES (?, ?, 'credit', ?)",
         [walletId, netAmount, `Penghasilan Order #${orderId}`]
     );
 };
+
 // --- EXPORTS ---
 
 exports.createOrder = async (req, res) => {
@@ -146,53 +154,82 @@ exports.updateOrderStatus = async (req, res) => {
     try {
         await connection.beginTransaction();
 
-        const [currentOrder] = await connection.execute(
-            "SELECT status, customer_id FROM orders WHERE id = ?", [id]
+        // 1. Ambil data order DAN fcm_token customer sekaligus (LEBIH EFISIEN)
+        const [orderData] = await connection.execute(
+            `SELECT o.status, u.fcm_token, u.full_name 
+             FROM orders o 
+             JOIN users u ON o.customer_id = u.id 
+             WHERE o.id = ?`, [id]
         );
 
-        if (currentOrder.length === 0) return res.status(404).json({ message: "Order tidak ditemukan" });
-        if (currentOrder[0].status === 'completed') return res.status(400).json({ message: "Order sudah selesai." });
+        if (orderData.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ message: "Order tidak ditemukan" });
+        }
 
-        // Update status
+        const currentStatus = orderData[0].status;
+        const customerFcm = orderData[0].fcm_token;
+
+        if (currentStatus === 'completed') {
+            await connection.rollback();
+            return res.status(400).json({ message: "Order sudah selesai." });
+        }
+
+        // 2. Update status ke DB
         await connection.execute("UPDATE orders SET status = ? WHERE id = ?", [status, id]);
 
+        // Simpan log status
         await connection.execute(
             "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, ?, ?)",
-            [id, status, `Status diperbarui ke ${status}`]
-        );
-
-        // Ambil FCM Token Customer
-        const [customer] = await connection.execute(
-            "SELECT fcm_token FROM users WHERE id = ?", [currentOrder[0].customer_id]
+            [id, status, `Status diperbarui ke ${status} oleh Mitra`]
         );
 
         await connection.commit();
 
-        // Kirim Notifikasi
-        if (customer[0]?.fcm_token) {
-            const statusMap = {
-                'accepted': 'telah diterima oleh teknisi',
-                'on_the_way': 'sedang menuju lokasi Anda 🛵',
-                'working': 'sedang mulai mengerjakan pesanan Anda 🛠️',
-                'completed': 'telah selesai dikerjakan ✅'
-            };
+        // 3. Mapping Pesan Notifikasi
+        const statusMap = {
+            'accepted': 'telah diterima oleh teknisi',
+            'on_the_way': 'sedang menuju lokasi Anda 🛵',
+            'working': 'sedang mulai mengerjakan pesanan Anda 🛠️',
+            'completed': 'telah selesai dikerjakan ✅'
+        };
 
-            // Gunakan await agar yakin terkirim sebelum function selesai sepenuhnya
-            await sendPushNotification(
-                customer[0].fcm_token,
-                "Update Pesanan",
-                `Pesanan Anda ${statusMap[status] || status}`,
-                { orderId: String(id), type: "STATUS_UPDATE", newStatus: status }
-            );
+        const pesan = `Halo, pesanan Anda ${statusMap[status] || status}`;
+
+        // 4. KIRIM NOTIFIKASI SEBELUM RESPONSE (ATAU DENGAN AWAIT)
+        // Ini kunci agar tidak gagal di tengah jalan
+        if (customerFcm) {
+            try {
+                await sendPushNotification(
+                    customerFcm,
+                    "Update Pesanan 🔔",
+                    pesan,
+                    {
+                        orderId: String(id),
+                        type: "STATUS_UPDATE",
+                        newStatus: status
+                    }
+                );
+                console.log(`✅ Notif Status ${status} terkirim ke Customer`);
+            } catch (fcmErr) {
+                console.error("❌ Gagal kirim FCM di updateOrderStatus:", fcmErr.message);
+            }
+        } else {
+            console.log("⚠️ Customer tidak punya FCM Token");
         }
 
-        res.status(200).json({ success: true, message: `Status berhasil diubah ke ${status}` });
+        // 5. Kirim respon akhir ke Frontend
+        return res.status(200).json({
+            success: true,
+            message: `Status berhasil diubah ke ${status}`
+        });
 
     } catch (error) {
-        await connection.rollback();
-        res.status(500).json({ success: false, error: error.message });
+        if (connection) await connection.rollback();
+        console.error("🔥 Error di updateOrderStatus:", error);
+        return res.status(500).json({ success: false, error: error.message });
     } finally {
-        connection.release();
+        if (connection) connection.release();
     }
 };
 // Selesaikan dan Rating oleh CUSTOMER (Mencairkan Dana)
