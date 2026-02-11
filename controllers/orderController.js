@@ -157,71 +157,120 @@ exports.getOrderDetail = async (req, res) => {
  * Digunakan mitra untuk mengupdate progress dan upload bukti foto
  */
 exports.updateOrderStatus = async (req, res) => {
+    // 1. Ambil ID dengan validasi ekstra (antisipasi string "undefined")
     const { id } = req.params;
-    const { status } = req.body; // status dari FormData
+    const { status } = req.body;
     const connection = await db.getConnection();
 
-    console.log(`\n[DEBUG] --- Update Status (Mitra) Order #${id} ---`);
+    console.log(`\n[DEBUG] --- Update Status (Mitra) ---`);
+    console.log(`- Order ID Raw: ${id}`);
+    console.log(`- Status Baru: ${status}`);
+    console.log(`- File Diterima: ${req.file ? req.file.filename : 'Tidak ada foto'}`);
 
     try {
+        // Validasi awal: Jika ID tidak ada atau string "undefined"
+        if (!id || id === 'undefined' || id === 'null') {
+            console.error(`[ERROR] Request masuk dengan ID tidak valid: ${id}`);
+            return res.status(400).json({
+                success: false,
+                message: "ID Order tidak valid (undefined). Periksa pengiriman params di aplikasi."
+            });
+        }
+
         await connection.beginTransaction();
 
-        // 1. Validasi Keberadaan Order
+        // 2. Cek Order & Ambil Data Customer (Gunakan JOIN untuk efisiensi)
         const [orderData] = await connection.execute(
-            `SELECT o.status, u.fcm_token, u.full_name FROM orders o 
-             JOIN users u ON o.customer_id = u.id WHERE o.id = ?`, [id]
+            `SELECT o.status, u.fcm_token, u.full_name 
+             FROM orders o 
+             JOIN users u ON o.customer_id = u.id 
+             WHERE o.id = ?`, [id]
         );
 
-        if (orderData.length === 0) throw new Error("Order tidak ditemukan");
-        if (orderData[0].status === 'completed') throw new Error("Order sudah selesai.");
+        if (orderData.length === 0) {
+            console.error(`[ERROR] Order #${id} tidak ditemukan di database.`);
+            await connection.rollback();
+            return res.status(404).json({ success: false, message: "Order tidak ditemukan" });
+        }
 
-        // 2. Tangani Upload Gambar dari Multer (req.file)
+        const currentOrder = orderData[0];
+
+        // Cegah update jika sudah completed (biar dana tidak cair 2x)
+        if (currentOrder.status === 'completed') {
+            console.warn(`[WARN] Mencoba update order #${id} yang sudah completed.`);
+            await connection.rollback();
+            return res.status(400).json({ success: false, message: "Order sudah selesai, tidak bisa diubah." });
+        }
+
+        // 3. Siapkan Query Update
         let query = "UPDATE orders SET status = ? WHERE id = ?";
         let params = [status, id];
 
+        // Jika ada file dari Multer, update kolom proof_image_url
         if (req.file) {
-            // Path ini harus sesuai dengan destination di Multer (orderRoutes)
+            // Gunakan path relatif agar konsisten dengan app.use('/uploads', ...) di app.js
             const proofPath = `uploads/work_evidence/${req.file.filename}`;
-            console.log(`[DEBUG] Bukti pengerjaan diterima: ${proofPath}`);
             query = "UPDATE orders SET status = ?, proof_image_url = ? WHERE id = ?";
             params = [status, proofPath, id];
         }
 
-        await connection.execute(query, params);
+        // 4. Eksekusi Update
+        const [updateResult] = await connection.execute(query, params);
 
-        // 3. Catat Log Perubahan
+        if (updateResult.affectedRows === 0) {
+            throw new Error("Gagal mengupdate database (AffectedRows: 0)");
+        }
+
+        // 5. Catat Log Status untuk Histori
         await connection.execute(
             "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, ?, ?)",
-            [id, status, `Update status oleh mitra ke ${status}`]
+            [id, status, `Mitra memperbarui status ke: ${status}`]
         );
 
         await connection.commit();
+        console.log(`✅ [SUCCESS] Order #${id} berhasil diupdate ke ${status}`);
 
-        // 4. Notifikasi ke Customer
-        if (orderData[0].fcm_token) {
+        // 6. Kirim Notifikasi ke Customer (Non-blocking)
+        if (currentOrder.fcm_token) {
             const statusMap = {
                 'accepted': 'telah diterima teknisi',
-                'on_the_way': 'dalam perjalanan ke lokasi',
-                'working': 'mulai dikerjakan',
+                'on_the_way': 'sedang menuju lokasi Anda',
+                'working': 'mulai dikerjakan di lokasi',
                 'completed': 'telah selesai dikerjakan ✅'
             };
-            const body = `Halo ${orderData[0].full_name}, pesanan Anda ${statusMap[status] || status}`;
 
-            sendPushNotification(orderData[0].fcm_token, "Update Pesanan 🔔", body, {
+            const title = "Update Pesanan 🔔";
+            const body = `Halo ${currentOrder.full_name}, pesanan Anda ${statusMap[status] || status}`;
+
+            sendPushNotification(currentOrder.fcm_token, title, body, {
                 orderId: String(id),
-                status: String(status)
-            }).catch(e => console.error("FCM Notif Error:", e.message));
+                status: String(status),
+                type: "STATUS_UPDATE"
+            }).then(() => {
+                console.log(`📲 [FCM] Notif terkirim ke customer: ${currentOrder.full_name}`);
+            }).catch(e => {
+                console.error("❌ [FCM-ERROR]:", e.message);
+            });
         }
 
-        res.status(200).json({ success: true, message: `Status berhasil diubah ke ${status}` });
+        return res.status(200).json({
+            success: true,
+            message: `Status berhasil diubah ke ${status}`,
+            data: { orderId: id, status: status }
+        });
 
     } catch (error) {
         if (connection) await connection.rollback();
-        console.error("🔥 Update Error:", error.message);
-        res.status(500).json({ success: false, error: error.message });
-    } finally { connection.release(); }
+        console.error("🔥 [FATAL ERROR] updateOrderStatus:", error.message);
+        return res.status(500).json({
+            success: false,
+            message: "Terjadi kesalahan internal server",
+            error: error.message
+        });
+    } finally {
+        if (connection) connection.release();
+    }
 };
-
 /**
  * CUSTOMER COMPLETE ORDER
  * Customer mengonfirmasi selesai, memberi rating, dan mencairkan dana ke Mitra
