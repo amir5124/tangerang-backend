@@ -1,3 +1,4 @@
+const fs = require('fs');
 const db = require('../config/db');
 const { sendPushNotification } = require('../services/notificationService');
 
