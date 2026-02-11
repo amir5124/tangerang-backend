@@ -211,7 +211,7 @@ exports.handleCallback = async (req, res) => {
                         await sendPushNotification(
                             order.customer_fcm,
                             "Pembayaran Berhasil! ✅",
-                            `Halo ${order.customer_name}, pembayaran untuk order #${order.order_id} sukses. Mitra akan segera memproses pesanan Anda.`,
+                            `Halo ${order.customer_name}, pembayaran sukses. Mitra akan segera memproses pesanan Anda.`,
                             {
                                 orderId: String(order.order_id),
                                 type: "PAYMENT_SUCCESS",
