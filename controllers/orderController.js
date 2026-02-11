@@ -148,38 +148,75 @@ exports.getUserOrders = async (req, res) => {
 
 exports.updateOrderStatus = async (req, res) => {
     const { id } = req.params;
-    const { status } = req.body;
+    const { status } = req.body; // status diambil dari FormData body
     const connection = await db.getConnection();
 
     try {
         await connection.beginTransaction();
 
+        // 1. Ambil data order dan Customer FCM
+        // Gunakan FOR UPDATE untuk mengunci baris agar tidak terjadi race condition
         const [orderData] = await connection.execute(
-            `SELECT o.status, u.fcm_token, u.full_name 
+            `SELECT o.status, o.proof_image_url, u.fcm_token, u.full_name 
              FROM orders o 
              JOIN users u ON o.customer_id = u.id 
-             WHERE o.id = ?`, [id]
+             WHERE o.id = ? FOR UPDATE`, [id]
         );
 
         if (orderData.length === 0) {
+            // Jika order tidak ada, hapus file yang baru saja diupload oleh multer (jika ada)
+            if (req.file) fs.unlinkSync(req.file.path);
             await connection.rollback();
-            return res.status(404).json({ message: "Order tidak ditemukan" });
+            return res.status(404).json({ success: false, message: "Order tidak ditemukan" });
         }
 
+        const currentStatus = orderData[0].status;
         const customerFcm = orderData[0].fcm_token;
-        if (orderData[0].status === 'completed') {
+
+        // 2. Validasi: Jika sudah selesai/batal, jangan ijinkan update lagi
+        if (['completed', 'cancelled'].includes(currentStatus)) {
+            if (req.file) fs.unlinkSync(req.file.path);
             await connection.rollback();
-            return res.status(400).json({ message: "Order sudah selesai." });
+            return res.status(400).json({ success: false, message: "Pesanan sudah bersifat final." });
         }
 
-        await connection.execute("UPDATE orders SET status = ? WHERE id = ?", [status, id]);
+        // 3. Logika Upload Gambar
+        let proofImageUrl = orderData[0].proof_image_url;
+        if (req.file) {
+            // Multer meletakkan file di req.file. 
+            // Kita simpan path-nya (misal: uploads/work_evidence/finish-123.jpg)
+            proofImageUrl = req.file.path.replace(/\\/g, '/');
+        }
+
+        // 4. Eksekusi Update ke Database
+        if (status === 'completed') {
+            // Opsional: Validasi wajib foto jika status 'completed'
+            if (!proofImageUrl) {
+                await connection.rollback();
+                return res.status(400).json({ success: false, message: "Foto bukti pengerjaan wajib diunggah." });
+            }
+
+            await connection.execute(
+                "UPDATE orders SET status = ?, proof_image_url = ? WHERE id = ?",
+                [status, proofImageUrl, id]
+            );
+        } else {
+            await connection.execute(
+                "UPDATE orders SET status = ? WHERE id = ?",
+                [status, id]
+            );
+        }
+
+        // 5. Catat Log Perubahan Status
         await connection.execute(
             "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, ?, ?)",
-            [id, status, `Status diperbarui ke ${status}`]
+            [id, status, `Status diperbarui ke ${status} oleh mitra`]
         );
 
+        // 6. Selesaikan Transaksi Database
         await connection.commit();
 
+        // 7. Kirim Notifikasi ke Customer (Setelah commit berhasil)
         if (customerFcm) {
             const statusMap = {
                 'accepted': 'telah diterima oleh teknisi',
@@ -192,27 +229,43 @@ exports.updateOrderStatus = async (req, res) => {
             const body = `Halo ${orderData[0].full_name}, pesanan Anda ${statusMap[status] || status}`;
 
             try {
-                // PERBAIKAN DI SINI: Samakan key dengan yang ada di callback
                 await sendPushNotification(
                     customerFcm,
                     title,
                     body,
                     {
                         orderId: String(id),
-                        type: "PAYMENT_SUCCESS", // COBA GUNAKAN TYPE INI (Jika app customer hanya filter type ini)
-                        status: String(status),  // Key status sangat penting
-                        click_action: "FLUTTER_NOTIFICATION_CLICK"
+                        type: "ORDER_STATUS_UPDATE",
+                        status: String(status)
                     }
                 );
-                console.log(`✅ Notif [${status}] terkirim ke: ${orderData[0].full_name}`);
             } catch (fcmErr) {
                 console.error("❌ FCM Error:", fcmErr.message);
             }
         }
 
-        return res.status(200).json({ success: true, message: `Status menjadi ${status}` });
+        return res.status(200).json({
+            success: true,
+            message: `Status berhasil diperbarui ke ${status}`,
+            data: {
+                orderId: id,
+                status: status,
+                proof_image_url: proofImageUrl
+            }
+        });
+
     } catch (error) {
+        // Jika terjadi error, batalkan semua perubahan database
         if (connection) await connection.rollback();
+
+        // Hapus file fisik yang gagal diproses agar tidak memenuhi storage
+        if (req.file) {
+            fs.unlink(req.file.path, (err) => {
+                if (err) console.error("Gagal menghapus file sampah:", err);
+            });
+        }
+
+        console.error("🔥 Error Update Status:", error);
         res.status(500).json({ success: false, error: error.message });
     } finally {
         connection.release();
