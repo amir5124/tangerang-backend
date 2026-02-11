@@ -177,14 +177,13 @@ exports.getUserOrders = async (req, res) => {
 
 exports.updateOrderStatus = async (req, res) => {
     const { id } = req.params;
-    const { status } = req.body; // status diambil dari FormData body
+    const { status } = req.body;
     const connection = await db.getConnection();
 
     try {
         await connection.beginTransaction();
 
-        // 1. Ambil data order dan Customer FCM
-        // Gunakan FOR UPDATE untuk mengunci baris agar tidak terjadi race condition
+        // 1. Ambil data order & info pelanggan
         const [orderData] = await connection.execute(
             `SELECT o.status, o.proof_image_url, u.fcm_token, u.full_name 
              FROM orders o 
@@ -193,7 +192,6 @@ exports.updateOrderStatus = async (req, res) => {
         );
 
         if (orderData.length === 0) {
-            // Jika order tidak ada, hapus file yang baru saja diupload oleh multer (jika ada)
             if (req.file) fs.unlinkSync(req.file.path);
             await connection.rollback();
             return res.status(404).json({ success: false, message: "Order tidak ditemukan" });
@@ -201,30 +199,28 @@ exports.updateOrderStatus = async (req, res) => {
 
         const currentStatus = orderData[0].status;
         const customerFcm = orderData[0].fcm_token;
+        const customerName = orderData[0].full_name;
 
-        // 2. Validasi: Jika sudah selesai/batal, jangan ijinkan update lagi
+        // 2. Validasi status final
         if (['completed', 'cancelled'].includes(currentStatus)) {
             if (req.file) fs.unlinkSync(req.file.path);
             await connection.rollback();
             return res.status(400).json({ success: false, message: "Pesanan sudah bersifat final." });
         }
 
-        // 3. Logika Upload Gambar
+        // 3. Penanganan gambar bukti kerja
         let proofImageUrl = orderData[0].proof_image_url;
         if (req.file) {
-            // Multer meletakkan file di req.file. 
-            // Kita simpan path-nya (misal: uploads/work_evidence/finish-123.jpg)
+            // Simpan path gambar baru
             proofImageUrl = req.file.path.replace(/\\/g, '/');
         }
 
-        // 4. Eksekusi Update ke Database
+        // 4. Update Database berdasarkan status
         if (status === 'completed') {
-            // Opsional: Validasi wajib foto jika status 'completed'
-            if (!proofImageUrl) {
+            if (!req.file && !proofImageUrl) {
                 await connection.rollback();
                 return res.status(400).json({ success: false, message: "Foto bukti pengerjaan wajib diunggah." });
             }
-
             await connection.execute(
                 "UPDATE orders SET status = ?, proof_image_url = ? WHERE id = ?",
                 [status, proofImageUrl, id]
@@ -236,16 +232,24 @@ exports.updateOrderStatus = async (req, res) => {
             );
         }
 
-        // 5. Catat Log Perubahan Status
+        // 5. Simpan Log
         await connection.execute(
             "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, ?, ?)",
             [id, status, `Status diperbarui ke ${status} oleh mitra`]
         );
 
-        // 6. Selesaikan Transaksi Database
+        // 6. COMMIT SEKARANG (Agar data tersimpan dulu di DB)
         await connection.commit();
 
-        // 7. Kirim Notifikasi ke Customer (Setelah commit berhasil)
+        // 7. RESPON KE CLIENT SEGERA (Agar HP Mitra tidak timeout/Network Error)
+        // Kita kirim respon dulu, baru jalankan proses notifikasi di background
+        res.status(200).json({
+            success: true,
+            message: `Status berhasil diperbarui ke ${status}`,
+            data: { orderId: id, status, proof_image_url: proofImageUrl }
+        });
+
+        // 8. PROSES NOTIFIKASI (Tanpa await agar tidak menahan response API)
         if (customerFcm) {
             const statusMap = {
                 'accepted': 'telah diterima oleh teknisi',
@@ -255,47 +259,25 @@ exports.updateOrderStatus = async (req, res) => {
             };
 
             const title = "Update Pesanan 🔔";
-            const body = `Halo ${orderData[0].full_name}, pesanan Anda ${statusMap[status] || status}`;
+            const body = `Halo ${customerName}, pesanan Anda ${statusMap[status] || status}`;
 
-            try {
-                await sendPushNotification(
-                    customerFcm,
-                    title,
-                    body,
-                    {
-                        orderId: String(id),
-                        type: "ORDER_STATUS_UPDATE",
-                        status: String(status)
-                    }
-                );
-            } catch (fcmErr) {
-                console.error("❌ FCM Error:", fcmErr.message);
-            }
+            // Panggil fungsi tanpa await
+            sendPushNotification(customerFcm, title, body, {
+                orderId: String(id),
+                type: "ORDER_STATUS_UPDATE",
+                status: String(status)
+            }).catch(err => console.error("❌ Background FCM Error:", err.message));
         }
-
-        return res.status(200).json({
-            success: true,
-            message: `Status berhasil diperbarui ke ${status}`,
-            data: {
-                orderId: id,
-                status: status,
-                proof_image_url: proofImageUrl
-            }
-        });
 
     } catch (error) {
-        // Jika terjadi error, batalkan semua perubahan database
         if (connection) await connection.rollback();
-
-        // Hapus file fisik yang gagal diproses agar tidak memenuhi storage
-        if (req.file) {
-            fs.unlink(req.file.path, (err) => {
-                if (err) console.error("Gagal menghapus file sampah:", err);
-            });
-        }
+        if (req.file) fs.unlinkSync(req.file.path);
 
         console.error("🔥 Error Update Status:", error);
-        res.status(500).json({ success: false, error: error.message });
+        // Pastikan respon belum terkirim sebelum mengirim error
+        if (!res.headersSent) {
+            res.status(500).json({ success: false, message: "Terjadi kesalahan pada server." });
+        }
     } finally {
         connection.release();
     }
