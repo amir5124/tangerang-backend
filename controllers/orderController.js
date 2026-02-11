@@ -105,39 +105,80 @@ exports.createOrder = async (req, res) => {
 };
 
 exports.getOrderDetail = async (req, res) => {
+    const { id } = req.params;
+
+    // LOG 1: Cek apakah ID masuk ke controller
+    console.log(`[DEBUG] Incoming Request - Method: GET, Path: /detail/${id}`);
+
     try {
-        const { id } = req.params;
         const sql = `
             SELECT 
                 o.*, 
-                o.proof_image_url,
                 u.full_name AS customer_name, 
                 u.phone_number AS customer_phone, 
-                u.fcm_token AS customer_fcm,
+                u.address AS address_customer,
                 m.full_name AS mitra_name, 
-                m.phone_number AS phone_number,
-                m.fcm_token AS mitra_fcm,
                 s.store_name,
                 (SELECT rating FROM reviews WHERE order_id = o.id LIMIT 1) as already_rated,
                 (SELECT JSON_ARRAYAGG(
                     JSON_OBJECT('nama', service_name, 'qty', qty, 'hargaSatuan', price_satuan)
                  ) FROM order_items WHERE order_id = o.id) AS items
             FROM orders o 
-            JOIN users u ON o.customer_id = u.id 
-            JOIN stores s ON o.store_id = s.id 
-            JOIN users m ON s.user_id = m.id 
+            LEFT JOIN users u ON o.customer_id = u.id 
+            LEFT JOIN stores s ON o.store_id = s.id 
+            LEFT JOIN users m ON s.user_id = m.id 
             WHERE o.id = ?`;
 
-        const [rows] = await db.execute(sql, [id]);
-        if (rows.length === 0) return res.status(404).json({ success: false, message: 'Pesanan tidak ditemukan' });
+        // LOG 2: Cek sebelum eksekusi query
+        console.log(`[DEBUG] Executing SQL for Order ID: ${id}`);
 
-        if (rows[0].proof_image_url && !rows[0].proof_image_url.startsWith('http')) {
-            rows[0].proof_image_url = `${req.protocol}://${req.get('host')}/${rows[0].proof_image_url.replace(/\\/g, '/')}`;
+        const [rows] = await db.execute(sql, [id]);
+
+        // LOG 3: Cek hasil dari database
+        if (rows.length === 0) {
+            console.warn(`[DEBUG] Order Not Found in Database for ID: ${id}`);
+            return res.status(404).json({
+                success: false,
+                message: 'Pesanan tidak ditemukan di database'
+            });
         }
 
-        res.status(200).json({ success: true, data: rows[0] });
+        let data = rows[0];
+        console.log(`[DEBUG] Order Found: ${data.id}, Status: ${data.status}`);
+
+        // Format Image URL
+        if (data.proof_image_url && !data.proof_image_url.startsWith('http')) {
+            try {
+                const protocol = req.protocol;
+                const host = req.get('host');
+                const cleanPath = data.proof_image_url.replace(/\\/g, '/');
+
+                data.proof_image_url = `${protocol}://${host}/${cleanPath}`;
+                console.log(`[DEBUG] Formatted Image URL: ${data.proof_image_url}`);
+            } catch (urlErr) {
+                console.error(`[DEBUG] URL Formatting Error:`, urlErr.message);
+                // Kita biarkan path aslinya jika format gagal agar tidak crash
+            }
+        }
+
+        // LOG 4: Kirim response sukses
+        console.log(`[DEBUG] Sending Response Success for Order ID: ${id}`);
+        res.status(200).json({ success: true, data: data });
+
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        // LOG 5: Detail error jika terjadi crash
+        console.error("#########################################");
+        console.error("[CRITICAL ERROR] getOrderDetail Exception:");
+        console.error("Order ID Requested:", id);
+        console.error("Error Message:", error.message);
+        console.error("Stack Trace:", error.stack);
+        console.error("#########################################");
+
+        res.status(500).json({
+            success: false,
+            message: "Internal Server Error",
+            error: error.message
+        });
     }
 };
 
