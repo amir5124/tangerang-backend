@@ -7,22 +7,24 @@ const { sendPushNotification } = require('../services/notificationService');
  * UPDATE: Sekarang mendukung otomatis membuat wallet jika belum ada (Upsert)
  */
 const releaseFundsToMitra = async (connection, orderId) => {
-    // 1. Ambil detail biaya dan ID User Mitra langsung dari tabel stores
+    // 1. Ambil detail biaya dan ID User Mitra
     const [order] = await connection.execute(
-        `SELECT o.total_price, o.platform_fee, s.user_id as mitra_user_id 
+        `SELECT o.total_price, s.user_id as mitra_user_id 
          FROM orders o 
          JOIN stores s ON o.store_id = s.id 
          WHERE o.id = ?`, [orderId]
     );
 
     if (order.length === 0) return;
-    const { total_price, platform_fee, mitra_user_id } = order[0];
+    const { total_price, mitra_user_id } = order[0];
 
-    // Net amount yang diterima mitra (Total - Biaya Aplikasi)
-    const netAmount = (parseFloat(total_price) || 0) - (parseFloat(platform_fee) || 0);
+    // --- PERHITUNGAN 70% ---
+    // Menggunakan Math.floor untuk menghindari angka pecahan di saldo wallet
+    const total = parseFloat(total_price) || 0;
+    const netAmount = Math.floor(total * 0.7);
+    const platformFeeAmount = total - netAmount; // Ini adalah 30% yang masuk ke platform
 
     // 2. CEK / BUAT WALLET (Upsert Logic)
-    // Cek apakah wallet sudah ada
     const [walletCheck] = await connection.execute(
         "SELECT id FROM wallets WHERE user_id = ?",
         [mitra_user_id]
@@ -31,14 +33,12 @@ const releaseFundsToMitra = async (connection, orderId) => {
     let walletId;
 
     if (walletCheck.length === 0) {
-        // Jika tidak ada, buat wallet baru
         const [insertWallet] = await connection.execute(
             "INSERT INTO wallets (user_id, balance) VALUES (?, ?)",
             [mitra_user_id, netAmount]
         );
         walletId = insertWallet.insertId;
     } else {
-        // Jika ada, update saldo yang sudah ada
         await connection.execute(
             "UPDATE wallets SET balance = balance + ? WHERE user_id = ?",
             [netAmount, mitra_user_id]
@@ -47,12 +47,22 @@ const releaseFundsToMitra = async (connection, orderId) => {
     }
 
     // 3. Catat history transaksi wallet
+    // Tambahkan keterangan persentase agar mitra tidak bingung
     await connection.execute(
         "INSERT INTO wallet_transactions (wallet_id, amount, type, description) VALUES (?, ?, 'credit', ?)",
-        [walletId, netAmount, `Penghasilan Order #${orderId}`]
+        [
+            walletId,
+            netAmount,
+            `Penghasilan Order #${orderId} (Bagi hasil 70%)`
+        ]
+    );
+
+    // OPTIONAL: Update platform_fee di tabel orders agar sesuai dengan kenyataan (30%)
+    await connection.execute(
+        "UPDATE orders SET platform_fee = ? WHERE id = ?",
+        [platformFeeAmount, orderId]
     );
 };
-
 // --- EXPORTS ---
 
 exports.createOrder = async (req, res) => {
@@ -330,26 +340,51 @@ exports.customerCompleteOrder = async (req, res) => {
         // 6. LOGIKA PENCAIRAN DANA YANG AMAN
         // Dana HANYA dicairkan jika ini adalah pertama kalinya order diselesaikan
         // Tambahkan ini di dalam blok "if (!isAlreadyCompleted)"
+        // 6. LOGIKA PENCAIRAN DANA YANG AMAN
         if (!isAlreadyCompleted) {
+            // Cairkan dana (70% seperti yang kita buat sebelumnya)
             await releaseFundsToMitra(connection, id);
 
-            // Kirim Notifikasi ke Mitra
-            const [mitraInfo] = await connection.execute(
-                `SELECT u.fcm_token FROM stores s 
-         JOIN users u ON s.user_id = u.id 
-         WHERE s.id = ?`, [store_id]
+            // Cari Token FCM Mitra dan hitung nominal untuk notifikasi
+            // Kita JOIN stores dengan users untuk mendapatkan fcm_token milik pemilik toko
+            const [mitraData] = await connection.execute(
+                `SELECT u.fcm_token, o.total_price 
+             FROM orders o
+             JOIN stores s ON o.store_id = s.id
+             JOIN users u ON s.user_id = u.id
+             WHERE o.id = ?`,
+                [id]
             );
 
-            if (mitraInfo[0]?.fcm_token) {
-                sendPushNotification(
-                    mitraInfo[0].fcm_token,
-                    "Dana Masuk! 💰",
-                    `Penghasilan telah masuk ke dompet Anda.`,
-                    {
-                        type: 'WALLET_UPDATE', // Kunci agar app mitra refresh saldo
-                        orderId: String(id)
-                    }
-                );
+            if (mitraData.length > 0 && mitraData[0].fcm_token) {
+                const fcmToken = mitraData[0].fcm_token;
+                const total = parseFloat(mitraData[0].total_price);
+                const pendapatanMitra = Math.floor(total * 0.7); // 70%
+
+                // Format Rupiah untuk notifikasi
+                const formattedAmount = new Intl.NumberFormat('id-ID', {
+                    style: 'currency',
+                    currency: 'IDR',
+                    maximumFractionDigits: 0
+                }).format(pendapatanMitra);
+
+                try {
+                    await sendPushNotification(
+                        fcmToken,
+                        "Dana Masuk! 💰",
+                        `Selamat! Pendapatan ${formattedAmount} dari Order #${id} telah masuk ke dompet Anda.`,
+                        {
+                            type: 'WALLET_UPDATE',
+                            orderId: String(id),
+                            amount: String(pendapatanMitra),
+                            click_action: "FLUTTER_NOTIFICATION_CLICK"
+                        }
+                    );
+                    console.log(`✅ Notif dana masuk terkirim ke mitra untuk Order #${id}`);
+                } catch (notifError) {
+                    console.error("❌ Gagal mengirim notifikasi ke mitra:", notifError.message);
+                    // Kita tidak melakukan rollback jika hanya notifikasi yang gagal
+                }
             }
         }
 
