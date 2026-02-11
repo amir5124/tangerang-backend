@@ -8,7 +8,7 @@ exports.getMitraDashboard = async (req, res) => {
     const { id } = req.params; // store_id
 
     try {
-        // 1. QUERY STATISTIK (Sama seperti sebelumnya)
+        // 1. QUERY STATISTIK
         const statsQuery = `
             SELECT 
                 s.store_name,
@@ -27,26 +27,24 @@ exports.getMitraDashboard = async (req, res) => {
         `;
 
         // 2. QUERY DETAIL ORDER TERBARU
-        // Menggabungkan orders dengan users (customer) dan services
+        // PERUBAHAN: o.id as order_id diganti menjadi o.id agar sinkron dengan frontend
         const recentOrdersQuery = `
-        SELECT 
-            o.id as order_id,
-            o.total_price,
-            o.status,
-            o.scheduled_date,
-            o.scheduled_time,
-            u.full_name as customer_name,
-            u.phone_number as customer_phone,
-            -- Ambil satu nama layanan saja untuk ringkasan di dashboard
-            (SELECT service_name FROM order_items WHERE order_id = o.id LIMIT 1) as service_name,
-            -- Atau jika ingin tahu total item
-            (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as total_items
-        FROM orders o
-        JOIN users u ON o.customer_id = u.id
-        WHERE o.store_id = ?
-        ORDER BY o.order_date DESC
-        LIMIT 5
-    `;
+            SELECT 
+                o.id, 
+                o.total_price,
+                o.status,
+                o.scheduled_date,
+                o.scheduled_time,
+                u.full_name as customer_name,
+                u.phone_number as customer_phone,
+                (SELECT service_name FROM order_items WHERE order_id = o.id LIMIT 1) as service_name,
+                (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as total_items
+            FROM orders o
+            JOIN users u ON o.customer_id = u.id
+            WHERE o.store_id = ?
+            ORDER BY o.order_date DESC
+            LIMIT 5
+        `;
 
         const [statsResults] = await db.query(statsQuery, [id]);
         const [ordersResults] = await db.query(recentOrdersQuery, [id]);
@@ -69,7 +67,7 @@ exports.getMitraDashboard = async (req, res) => {
                     rating: parseFloat(stats.avg_rating).toFixed(1),
                     total_reviews: stats.total_reviews
                 },
-                recent_orders: ordersResults // Daftar pesanan detail
+                recent_orders: ordersResults
             }
         });
 
