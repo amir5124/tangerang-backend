@@ -20,7 +20,7 @@ const app = express();
 // --- 2. MIDDLEWARE CORS & JSON ---
 const allowedOrigins = [
     'https://tangerangfast.netlify.app',
-    'http://localhost:19006',
+    'http://localhost:8082',
     'http://localhost:8081',
 ];
 
