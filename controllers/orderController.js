@@ -3,41 +3,37 @@ const { sendPushNotification } = require('../services/notificationService');
 
 /**
  * HELPER: Fungsi Internal untuk Pencairan Dana
- * UPDATE: Sekarang mendukung otomatis membuat wallet jika belum ada (Upsert)
+ * LOGIKA: 70% untuk Mitra, 30% dipotong (Platform Fee)
  */
 const releaseFundsToMitra = async (connection, orderId) => {
-    // 1. Ambil detail biaya dan ID User Mitra langsung dari tabel stores
+    // 1. Ambil detail biaya dan ID User Mitra
     const [order] = await connection.execute(
-        `SELECT o.total_price, o.platform_fee, s.user_id as mitra_user_id 
+        `SELECT o.total_price, s.user_id as mitra_user_id 
          FROM orders o 
          JOIN stores s ON o.store_id = s.id 
          WHERE o.id = ?`, [orderId]
     );
 
     if (order.length === 0) return;
-    const { total_price, platform_fee, mitra_user_id } = order[0];
+    const { total_price, mitra_user_id } = order[0];
 
-    // Net amount yang diterima mitra (Total - Biaya Aplikasi)
-    const netAmount = (parseFloat(total_price) || 0) - (parseFloat(platform_fee) || 0);
+    // HITUNG: 70% untuk Mitra
+    const netAmount = (parseFloat(total_price) || 0) * 0.7;
 
     // 2. CEK / BUAT WALLET (Upsert Logic)
-    // Cek apakah wallet sudah ada
     const [walletCheck] = await connection.execute(
         "SELECT id FROM wallets WHERE user_id = ?",
         [mitra_user_id]
     );
 
     let walletId;
-
     if (walletCheck.length === 0) {
-        // Jika tidak ada, buat wallet baru
         const [insertWallet] = await connection.execute(
             "INSERT INTO wallets (user_id, balance) VALUES (?, ?)",
             [mitra_user_id, netAmount]
         );
         walletId = insertWallet.insertId;
     } else {
-        // Jika ada, update saldo yang sudah ada
         await connection.execute(
             "UPDATE wallets SET balance = balance + ? WHERE user_id = ?",
             [netAmount, mitra_user_id]
@@ -48,7 +44,7 @@ const releaseFundsToMitra = async (connection, orderId) => {
     // 3. Catat history transaksi wallet
     await connection.execute(
         "INSERT INTO wallet_transactions (wallet_id, amount, type, description) VALUES (?, ?, 'credit', ?)",
-        [walletId, netAmount, `Penghasilan Order #${orderId}`]
+        [walletId, netAmount, `Penghasilan Order #${orderId} (70%)`]
     );
 };
 
@@ -99,7 +95,6 @@ exports.getOrderDetail = async (req, res) => {
         const sql = `
             SELECT 
                 o.*, 
-                o.proof_image_url,
                 u.full_name AS customer_name, 
                 u.phone_number AS customer_phone, 
                 u.fcm_token AS customer_fcm,
@@ -120,6 +115,7 @@ exports.getOrderDetail = async (req, res) => {
         const [rows] = await db.execute(sql, [id]);
         if (rows.length === 0) return res.status(404).json({ success: false, message: 'Pesanan tidak ditemukan' });
 
+        // Fix Path Gambar untuk Mobile
         if (rows[0].proof_image_url && !rows[0].proof_image_url.startsWith('http')) {
             rows[0].proof_image_url = `${req.protocol}://${req.get('host')}/${rows[0].proof_image_url.replace(/\\/g, '/')}`;
         }
@@ -146,6 +142,10 @@ exports.getUserOrders = async (req, res) => {
     }
 };
 
+/**
+ * Update Status dari Mitra
+ * Mendukung Upload Gambar (Multipart/form-data)
+ */
 exports.updateOrderStatus = async (req, res) => {
     const { id } = req.params;
     const { status } = req.body;
@@ -166,48 +166,48 @@ exports.updateOrderStatus = async (req, res) => {
             return res.status(404).json({ message: "Order tidak ditemukan" });
         }
 
-        const customerFcm = orderData[0].fcm_token;
         if (orderData[0].status === 'completed') {
             await connection.rollback();
             return res.status(400).json({ message: "Order sudah selesai." });
         }
 
-        await connection.execute("UPDATE orders SET status = ? WHERE id = ?", [status, id]);
+        // Logic Gambar: Jika ada file dari multer
+        let sqlUpdate = "UPDATE orders SET status = ? WHERE id = ?";
+        let sqlParams = [status, id];
+
+        if (req.file) {
+            // Path yang disimpan: uploads/proofs/nama-file.jpg
+            const proofPath = `uploads/proofs/${req.file.filename}`;
+            sqlUpdate = "UPDATE orders SET status = ?, proof_image_url = ? WHERE id = ?";
+            sqlParams = [status, proofPath, id];
+        }
+
+        await connection.execute(sqlUpdate, sqlParams);
         await connection.execute(
             "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, ?, ?)",
-            [id, status, `Status diperbarui ke ${status}`]
+            [id, status, `Status diperbarui ke ${status} ${req.file ? '(Bukti Foto diunggah)' : ''}`]
         );
 
         await connection.commit();
 
+        // Notifikasi ke Customer
+        const customerFcm = orderData[0].fcm_token;
         if (customerFcm) {
             const statusMap = {
                 'accepted': 'telah diterima oleh teknisi',
-                'on_the_way': 'sedang menuju lokasi Anda 🛵',
-                'working': 'sedang dikerjakan 🛠️',
+                'on_the_way': 'sedang menuju lokasi Anda',
+                'working': 'sedang dikerjakan',
                 'completed': 'telah selesai dikerjakan ✅'
             };
 
             const title = "Update Pesanan 🔔";
             const body = `Halo ${orderData[0].full_name}, pesanan Anda ${statusMap[status] || status}`;
 
-            try {
-                // PERBAIKAN DI SINI: Samakan key dengan yang ada di callback
-                await sendPushNotification(
-                    customerFcm,
-                    title,
-                    body,
-                    {
-                        orderId: String(id),
-                        type: "PAYMENT_SUCCESS", // COBA GUNAKAN TYPE INI (Jika app customer hanya filter type ini)
-                        status: String(status),  // Key status sangat penting
-                        click_action: "FLUTTER_NOTIFICATION_CLICK"
-                    }
-                );
-                console.log(`✅ Notif [${status}] terkirim ke: ${orderData[0].full_name}`);
-            } catch (fcmErr) {
-                console.error("❌ FCM Error:", fcmErr.message);
-            }
+            sendPushNotification(customerFcm, title, body, {
+                orderId: String(id),
+                type: "ORDER_UPDATE",
+                status: String(status)
+            });
         }
 
         return res.status(200).json({ success: true, message: `Status menjadi ${status}` });
@@ -218,53 +218,44 @@ exports.updateOrderStatus = async (req, res) => {
         connection.release();
     }
 };
-// Selesaikan dan Rating oleh CUSTOMER (Mencairkan Dana)
+
+/**
+ * Konfirmasi Selesai oleh Customer
+ * Mencairkan 70% dana ke Mitra
+ */
 exports.customerCompleteOrder = async (req, res) => {
-    const { id } = req.params; // ID Order
+    const { id } = req.params;
     const { rating, comment, quality, punctuality, communication } = req.body;
     const connection = await db.getConnection();
 
     try {
         await connection.beginTransaction();
 
-        // 1. Ambil data order secara mendalam untuk validasi
         const [orderData] = await connection.execute(
             "SELECT customer_id, store_id, status FROM orders WHERE id = ?",
             [id]
         );
 
-        if (orderData.length === 0) {
-            throw new Error("Order tidak ditemukan");
-        }
+        if (orderData.length === 0) throw new Error("Order tidak ditemukan");
 
         const { customer_id, store_id, status } = orderData[0];
-        const isAlreadyCompleted = status === 'completed';
 
-        // 2. Normalisasi input rating agar selalu berupa angka (Integer)
-        const finalRating = parseInt(rating) || 5;
-        const q = parseInt(quality) || 5;
-        const p = parseInt(punctuality) || 5;
-        const c = parseInt(communication) || 5;
+        // PENCEGAHAN DOUBLE TRANSFER: Dana hanya cair jika status belum 'completed'
+        const isAlreadyCompleted = (status === 'completed');
 
-        // 3. Simpan atau Perbarui Review (Atomic Update)
-        // UNIQUE(order_id) di database akan memicu bagian ON DUPLICATE KEY
+        // 1. Simpan Review
         await connection.execute(
             `INSERT INTO reviews 
                 (order_id, customer_id, store_id, rating, rating_quality, rating_punctuality, rating_communication, comment) 
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-             ON DUPLICATE KEY UPDATE 
-                rating = VALUES(rating),
-                rating_quality = VALUES(rating_quality),
-                rating_punctuality = VALUES(rating_punctuality),
-                rating_communication = VALUES(rating_communication),
-                comment = VALUES(comment)`,
-            [id, customer_id, store_id, finalRating, q, p, c, comment || ""]
+             ON DUPLICATE KEY UPDATE rating = VALUES(rating), comment = VALUES(comment)`,
+            [id, customer_id, store_id, parseInt(rating) || 5, parseInt(quality) || 5, parseInt(punctuality) || 5, parseInt(communication) || 5, comment || ""]
         );
 
-        // 4. Update Status Order menjadi 'completed'
+        // 2. Update Status Order
         await connection.execute("UPDATE orders SET status = 'completed' WHERE id = ?", [id]);
 
-        // 5. Update Rating Akumulatif di Tabel Stores
+        // 3. Update Rating Store
         await connection.execute(
             `UPDATE stores SET 
              average_rating = (SELECT COALESCE(AVG(rating), 0) FROM reviews WHERE store_id = ?), 
@@ -273,26 +264,24 @@ exports.customerCompleteOrder = async (req, res) => {
             [store_id, store_id, store_id]
         );
 
-        // 6. LOGIKA PENCAIRAN DANA YANG AMAN
-        // Dana HANYA dicairkan jika ini adalah pertama kalinya order diselesaikan
-        // Tambahkan ini di dalam blok "if (!isAlreadyCompleted)"
+        // 4. PENCAIRAN DANA (70%)
         if (!isAlreadyCompleted) {
             await releaseFundsToMitra(connection, id);
 
-            // Kirim Notifikasi ke Mitra
+            // Ambil Token Mitra untuk Notifikasi
             const [mitraInfo] = await connection.execute(
-                `SELECT u.fcm_token FROM stores s 
-         JOIN users u ON s.user_id = u.id 
-         WHERE s.id = ?`, [store_id]
+                `SELECT u.fcm_token, u.full_name FROM stores s 
+                 JOIN users u ON s.user_id = u.id 
+                 WHERE s.id = ?`, [store_id]
             );
 
             if (mitraInfo[0]?.fcm_token) {
-                sendPushNotification(
+                await sendPushNotification(
                     mitraInfo[0].fcm_token,
                     "Dana Masuk! 💰",
-                    `Penghasilan telah masuk ke dompet Anda.`,
+                    `Halo ${mitraInfo[0].full_name}, pelanggan telah mengonfirmasi selesai. Dana 70% telah diteruskan ke dompet Anda.`,
                     {
-                        type: 'WALLET_UPDATE', // Kunci agar app mitra refresh saldo
+                        type: 'WALLET_UPDATE',
                         orderId: String(id)
                     }
                 );
@@ -302,17 +291,12 @@ exports.customerCompleteOrder = async (req, res) => {
         await connection.commit();
         res.status(200).json({
             success: true,
-            message: isAlreadyCompleted ? "Ulasan diperbarui." : "Pesanan selesai dan dana dicairkan."
+            message: isAlreadyCompleted ? "Ulasan diperbarui." : "Pesanan selesai dan dana 70% dicairkan."
         });
 
     } catch (error) {
         await connection.rollback();
-        console.error("🔥 [Error customerCompleteOrder]:", error.message);
-        res.status(500).json({
-            success: false,
-            message: "Gagal memproses ulasan",
-            error: error.message
-        });
+        res.status(500).json({ success: false, error: error.message });
     } finally {
         connection.release();
     }
