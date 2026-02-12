@@ -262,3 +262,44 @@ exports.checkPaymentStatus = async (req, res) => {
         connection.release();
     }
 };
+
+exports.getPaymentHistory = async (req, res) => {
+    const { customer_id } = req.params;
+    const connection = await db.getConnection();
+
+    try {
+        const sql = `
+            SELECT 
+                o.id AS order_id,
+                o.scheduled_date,
+                o.scheduled_time,
+                o.status AS order_status,
+                o.total_price,
+                s.name AS mitra_name,
+                p.payment_method,
+                p.payment_status,
+                p.pdf_url,
+                p.payment_details,
+                p.expired_at
+            FROM orders o
+            LEFT JOIN payments p ON o.id = p.order_id
+            LEFT JOIN stores s ON o.store_id = s.id
+            WHERE o.customer_id = ?
+            ORDER BY o.id DESC`;
+
+        const [rows] = await connection.execute(sql, [customer_id]);
+
+        // Parsing payment_details dari JSON string ke Object
+        const formattedData = rows.map(row => ({
+            ...row,
+            payment_details: typeof row.payment_details === 'string' ? JSON.parse(row.payment_details) : row.payment_details
+        }));
+
+        res.json({ success: true, data: formattedData });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false, message: err.message });
+    } finally {
+        connection.release();
+    }
+};
