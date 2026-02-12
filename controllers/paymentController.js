@@ -6,11 +6,9 @@ const { sendPushNotification } = require('../services/notificationService'); // 
 const moment = require('moment-timezone');
 
 exports.createPayment = async (req, res) => {
-    // 1. LOG REQUEST MASUK DARI MOBILE
     console.log("==========================================");
     console.log("DEBUG: Incoming Request to /create");
     console.log("Timestamp:", new Date().toISOString());
-    console.log("Body:", JSON.stringify(req.body, null, 2));
     console.log("==========================================");
 
     const connection = await db.getConnection();
@@ -22,9 +20,7 @@ exports.createPayment = async (req, res) => {
             jadwal, lokasi, rincian_biaya, layananTerpilih, catatan, kontak
         } = req.body;
 
-        // Validasi data dasar untuk menghindari error SQL
         if (!customer_id || !metode_pembayaran) {
-            console.error("DEBUG ERROR: Missing required fields (customer_id or method)");
             return res.status(400).json({ success: false, message: "Data tidak lengkap" });
         }
 
@@ -33,12 +29,13 @@ exports.createPayment = async (req, res) => {
         const expired = helpers.getExpiredTimestamp(isQRIS ? 30 : 1440);
         const finalEmail = helpers.isValidEmail(kontak?.email) ? kontak.email : process.env.DEFAULT_EMAIL;
 
-        // 2. SIMPAN KE TABEL ORDERS
+        // 2. SIMPAN KE TABEL ORDERS 
+        // PERUBAHAN: Status awal diset 'unpaid' agar tidak muncul di aplikasi Mitra
         const sqlOrder = `INSERT INTO orders 
             (customer_id, store_id, scheduled_date, scheduled_time, building_type, address_customer, total_price, platform_fee, service_fee, status, customer_notes, items) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`;
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?)`;
 
-        console.log("DEBUG: Executing Order Insert...");
+        console.log("DEBUG: Executing Order Insert with status 'unpaid'...");
         const [orderResult] = await connection.execute(sqlOrder, [
             customer_id, store_id, jadwal.tanggal, jadwal.waktu, jenisGedung,
             lokasi.alamatLengkap, rincian_biaya.subtotal_layanan,
@@ -47,7 +44,6 @@ exports.createPayment = async (req, res) => {
         ]);
 
         const newOrderId = orderResult.insertId;
-        console.log("DEBUG: Order Created ID:", newOrderId);
 
         // 3. SIMPAN KE ORDER ITEMS
         const sqlItem = `INSERT INTO order_items (order_id, service_name, qty, price_satuan, subtotal) VALUES (?, ?, ?, ?, ?)`;
@@ -69,14 +65,9 @@ exports.createPayment = async (req, res) => {
             wa: kontak.nomorWhatsApp
         };
 
-        console.log("DEBUG: Sending Payload to LinkQu Service:", JSON.stringify(payload, null, 2));
-
         const linkquRes = isQRIS ? await linkqu.createQRIS(payload) : await linkqu.createVA(payload);
 
-        console.log("DEBUG: LinkQu Response Data:", JSON.stringify(linkquRes.data, null, 2));
-
         if (!linkquRes.data || linkquRes.data.status !== 'SUCCESS') {
-            console.error("DEBUG ERROR: LinkQu Status Not Success", linkquRes.data);
             throw new Error(linkquRes.data?.message || "Gagal mendapatkan respon dari LinkQu");
         }
 
@@ -94,9 +85,9 @@ exports.createPayment = async (req, res) => {
         ]);
 
         await connection.commit();
-        console.log("DEBUG: Transaction Committed Successfully");
+        console.log("DEBUG: Transaction Committed. Order is currently 'unpaid'.");
 
-        const responseData = {
+        res.json({
             success: true,
             order_id: newOrderId,
             payment_data: {
@@ -104,34 +95,28 @@ exports.createPayment = async (req, res) => {
                 qris_url: linkquRes.data.imageqris || null,
                 expired_at: formattedExpired,
                 amount: rincian_biaya.total_akhir,
-                partner_reff: partner_reff // Dibutuhkan frontend untuk polling
+                partner_reff: partner_reff
             }
-        };
-
-        res.json(responseData);
+        });
 
     } catch (err) {
         if (connection) await connection.rollback();
         console.error("!!! BACKEND CRASH ERROR !!!", err.message);
-        res.status(500).json({ success: false, message: "Internal Server Error", debug_message: err.message });
+        res.status(500).json({ success: false, message: "Internal Server Error" });
     } finally {
         connection.release();
     }
 };
 
-
 exports.handleCallback = async (req, res) => {
     const connection = await db.getConnection();
     try {
         const { partner_reff, status, amount } = req.body;
-
-        // Log awal untuk memantau data yang masuk dari LinkQu
         console.log(`📩 Webhook Received: Reff #${partner_reff} | Status: ${status}`);
 
         if (status === 'SUCCESS' || status === 'SETTLED') {
             await connection.beginTransaction();
 
-            // 1. Ambil data detail Order, Customer (termasuk FCM), dan Token FCM Mitra
             const [rows] = await connection.execute(
                 `SELECT 
                     o.id AS order_id, o.items, o.building_type, o.scheduled_date, 
@@ -151,37 +136,34 @@ exports.handleCallback = async (req, res) => {
             if (rows.length > 0) {
                 const order = rows[0];
 
-                // 2. Update Database
+                // 1. Update Payment Status
                 await connection.execute(
                     "UPDATE payments SET payment_status = 'settlement', transaction_time = NOW() WHERE transaction_id = ?",
                     [partner_reff]
                 );
+
+                // 2. PERUBAHAN: Ubah status order ke 'pending' agar muncul di aplikasi Mitra (Modal Terima/Abaikan)
                 await connection.execute(
-                    "UPDATE orders SET status = 'accepted' WHERE id = ?",
-                    [order.order_id]
-                );
-                await connection.execute(
-                    "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'accepted', 'Pembayaran berhasil dikonfirmasi via LinkQu Callback')",
+                    "UPDATE orders SET status = 'pending' WHERE id = ?",
                     [order.order_id]
                 );
 
-                // Commit transaksi DB agar data aman sebelum proses notifikasi
+                await connection.execute(
+                    "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'pending', 'Pembayaran sukses, pesanan diteruskan ke mitra')",
+                    [order.order_id]
+                );
+
                 await connection.commit();
-                console.log(`✅ DB Updated: Order #${order.order_id} has been accepted.`);
+                console.log(`✅ Order #${order.order_id} is now LIVE for Mitra.`);
 
-                // Parsing items untuk kebutuhan notifikasi
                 const itemsDetail = typeof order.items === 'string' ? JSON.parse(order.items) : order.items;
 
-                // 3. KIRIM PUSH NOTIFICATION KE MITRA
+                // 3. Notifikasi ke Mitra
                 if (order.mitra_fcm) {
                     try {
                         let teksLayanan = "Jasa";
                         if (itemsDetail && itemsDetail.length > 0) {
-                            const namaLayananPertama = itemsDetail[0].nama;
-                            const jumlahLayananLainnya = itemsDetail.length - 1;
-                            teksLayanan = jumlahLayananLainnya > 0
-                                ? `${namaLayananPertama} dan ${jumlahLayananLainnya} layanan lainnya`
-                                : namaLayananPertama;
+                            teksLayanan = itemsDetail[0].nama + (itemsDetail.length > 1 ? ` dan ${itemsDetail.length - 1} lainnya` : "");
                         }
 
                         await sendPushNotification(
@@ -191,48 +173,34 @@ exports.handleCallback = async (req, res) => {
                             {
                                 orderId: String(order.order_id),
                                 type: "NEW_ORDER",
-                                customerName: String(order.customer_name),
-                                address: String(order.address_customer),
-                                schedule: `${order.scheduled_date} ${order.scheduled_time}`,
-                                buildingType: String(order.building_type),
-                                totalPrice: String(amount),
-                                items: JSON.stringify(itemsDetail)
+                                status: "pending"
                             }
                         );
-                        console.log(`📲 FCM Sent (Mitra): ${order.mitra_name}`);
                     } catch (fcmErr) {
                         console.error("⚠️ FCM Mitra Error:", fcmErr.message);
                     }
                 }
 
-                // 4. KIRIM PUSH NOTIFICATION KE CUSTOMER (Wafa Shanum)
+                // 4. Notifikasi ke Customer
                 if (order.customer_fcm) {
                     try {
                         await sendPushNotification(
                             order.customer_fcm,
                             "Pembayaran Berhasil! ✅",
-                            `Halo ${order.customer_name}, pembayaran sukses. Mitra akan segera memproses pesanan Anda.`,
+                            `Halo ${order.customer_name}, pembayaran sukses. Menunggu konfirmasi dari teknisi.`,
                             {
                                 orderId: String(order.order_id),
                                 type: "PAYMENT_SUCCESS",
-                                status: "accepted"
+                                status: "pending"
                             }
                         );
-                        console.log(`📲 FCM Sent (Customer): ${order.customer_name}`);
                     } catch (fcmErr) {
                         console.error("⚠️ FCM Customer Error:", fcmErr.message);
                     }
                 }
-
-                console.log(`🚀 Webhook Processed Successfully for Order #${order.order_id}`);
-            } else {
-                console.log(`⚠️ Webhook Skip: Transaction ID #${partner_reff} not found or already processed.`);
             }
         }
-
-        // Respon ke LinkQu
         res.status(200).send("OK");
-
     } catch (err) {
         if (connection) await connection.rollback();
         console.error("❌ Callback Error:", err.message);
