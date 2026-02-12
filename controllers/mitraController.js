@@ -12,24 +12,29 @@ exports.getMitraDashboard = async (req, res) => {
 
         // 1. QUERY STATISTIK (DIPERBAIKI)
         const statsQuery = `
-            SELECT 
-                s.store_name,
-                s.user_id,
-                -- Ambil Saldo Langsung
-                IFNULL((SELECT balance FROM wallets WHERE user_id = s.user_id LIMIT 1), 0) as balance,
-                
-                -- Hitung Statistik Order secara terpisah agar tidak duplikat dengan Review
-                IFNULL((SELECT SUM(total_price) FROM orders WHERE store_id = s.id AND status = 'completed'), 0) as revenue,
-                (SELECT COUNT(*) FROM orders WHERE store_id = s.id AND status = 'completed') as completed_jobs,
-                (SELECT COUNT(*) FROM orders WHERE store_id = s.id AND status IN ('pending', 'accepted', 'on_the_way', 'working')) as active_jobs,
-                
-                -- Hitung Statistik Review secara terpisah
-                IFNULL((SELECT AVG(rating) FROM reviews WHERE store_id = s.id), 0) as avg_rating,
-                (SELECT COUNT(*) FROM reviews WHERE store_id = s.id) as total_reviews
-            FROM stores s
-            WHERE s.id = ?
-        `;
-
+        SELECT 
+            s.store_name,
+            s.user_id,
+            -- Saldo nyata di dompet (Uang Cair)
+            IFNULL((SELECT balance FROM wallets WHERE user_id = s.user_id LIMIT 1), 0) as balance,
+            
+            -- Total Pendapatan yang SUDAH CAIR (70% dari order completed)
+            IFNULL((SELECT SUM(FLOOR(total_price * 0.7)) FROM orders WHERE store_id = s.id AND status = 'completed'), 0) as revenue,
+            
+            -- Pekerjaan Selesai (Hanya yang sudah dikonfirmasi Customer)
+            (SELECT COUNT(*) FROM orders WHERE store_id = s.id AND status = 'completed') as completed_jobs,
+            
+            -- Pekerjaan yang sedang berjalan (Accepted, OTW)
+            (SELECT COUNT(*) FROM orders WHERE store_id = s.id AND status IN ('accepted', 'on_the_way')) as active_jobs,
+    
+            -- PEKERJAAN MENUNGGU KONFIRMASI (Sudah diupload bukti tapi belum completed)
+            (SELECT COUNT(*) FROM orders WHERE store_id = s.id AND status = 'working' AND proof_image_url IS NOT NULL) as pending_confirmation,
+            
+            IFNULL((SELECT AVG(rating) FROM reviews WHERE store_id = s.id), 0) as avg_rating,
+            (SELECT COUNT(*) FROM reviews WHERE store_id = s.id) as total_reviews
+        FROM stores s
+        WHERE s.id = ?
+    `;
         // 2. QUERY DETAIL ORDER TERBARU (Sudah cukup oke, tapi kita pastikan efisien)
         const recentOrdersQuery = `
             SELECT 

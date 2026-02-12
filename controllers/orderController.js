@@ -221,21 +221,22 @@ exports.updateOrderStatus = async (req, res) => {
         }
 
         // 4. Update Database berdasarkan status
+        // 4. Update Database berdasarkan status
         if (status === 'completed') {
-            if (!req.file && !proofImageUrl) {
-                await connection.rollback();
-                return res.status(400).json({ success: false, message: "Foto bukti pengerjaan wajib diunggah." });
-            }
-            await connection.execute(
-                "UPDATE orders SET status = ?, proof_image_url = ? WHERE id = ?",
-                [status, proofImageUrl, id]
-            );
-        } else {
-            await connection.execute(
-                "UPDATE orders SET status = ? WHERE id = ?",
-                [status, id]
-            );
+            // JANGAN izinkan update status ke 'completed' di sini
+            // Karena 'completed' adalah hak Customer untuk mencairkan dana
+            await connection.rollback();
+            return res.status(403).json({
+                success: false,
+                message: "Status 'Selesai' hanya bisa dikonfirmasi oleh pelanggan."
+            });
         }
+
+        // Gunakan status 'working' saat mitra mengunggah bukti
+        await connection.execute(
+            "UPDATE orders SET status = ?, proof_image_url = ? WHERE id = ?",
+            [status, proofImageUrl, id]
+        );
 
         // 5. Simpan Log
         await connection.execute(
