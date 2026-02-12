@@ -182,13 +182,13 @@ exports.getUserOrders = async (req, res) => {
 
 exports.updateOrderStatus = async (req, res) => {
     const { id } = req.params;
-    const { status } = req.body;
+    const { status } = req.body; // Status yang dikirim dari aplikasi Mitra
     const connection = await db.getConnection();
 
     try {
         await connection.beginTransaction();
 
-        // 1. Ambil data order & info pelanggan
+        // 1. Ambil data order & info pelanggan (Lock row untuk konsistensi)
         const [orderData] = await connection.execute(
             `SELECT o.status, o.proof_image_url, u.fcm_token, u.full_name 
              FROM orders o 
@@ -206,7 +206,7 @@ exports.updateOrderStatus = async (req, res) => {
         const customerFcm = orderData[0].fcm_token;
         const customerName = orderData[0].full_name;
 
-        // 2. Validasi status final
+        // 2. Validasi status final (Jika sudah completed/cancelled tidak boleh diubah lagi)
         if (['completed', 'cancelled'].includes(currentStatus)) {
             if (req.file) fs.unlinkSync(req.file.path);
             await connection.rollback();
@@ -216,62 +216,66 @@ exports.updateOrderStatus = async (req, res) => {
         // 3. Penanganan gambar bukti kerja
         let proofImageUrl = orderData[0].proof_image_url;
         if (req.file) {
-            // Simpan path gambar baru
             proofImageUrl = req.file.path.replace(/\\/g, '/');
         }
 
-        // 4. Update Database berdasarkan status
-        // 4. Update Database berdasarkan status
+        // 4. LOGIKA MAPPING STATUS (DIPERBAIKI)
+        let statusToSave = status;
+        let responseMessage = `Status berhasil diperbarui ke ${status}`;
+
         if (status === 'completed') {
-            // JANGAN izinkan update status ke 'completed' di sini
-            // Karena 'completed' adalah hak Customer untuk mencairkan dana
-            await connection.rollback();
-            return res.status(403).json({
-                success: false,
-                message: "Status 'Selesai' hanya bisa dikonfirmasi oleh pelanggan."
-            });
+            // Mitra klik "Selesai", tapi kita jangan set 'completed' di DB.
+            // Kita biarkan status tetap 'working' agar dana TIDAK cair otomatis.
+            // Keberadaan proof_image_url akan membuat order ini muncul di "Menunggu Konfirmasi" pada dashboard.
+            if (!req.file && !proofImageUrl) {
+                await connection.rollback();
+                return res.status(400).json({ success: false, message: "Bukti foto wajib diunggah untuk menyelesaikan pekerjaan." });
+            }
+            statusToSave = 'working';
+            responseMessage = "Laporan pengerjaan terkirim. Menunggu konfirmasi pelanggan untuk pencairan dana.";
         }
 
-        // Gunakan status 'working' saat mitra mengunggah bukti
+        // 5. Eksekusi Update ke Database
         await connection.execute(
             "UPDATE orders SET status = ?, proof_image_url = ? WHERE id = ?",
-            [status, proofImageUrl, id]
+            [statusToSave, proofImageUrl, id]
         );
 
-        // 5. Simpan Log
+        // 6. Simpan Log Aktivitas
+        const logNotes = status === 'completed'
+            ? `Mitra melaporkan pekerjaan selesai (Menunggu konfirmasi)`
+            : `Status diperbarui ke ${status} oleh mitra`;
+
         await connection.execute(
             "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, ?, ?)",
-            [id, status, `Status diperbarui ke ${status} oleh mitra`]
+            [id, statusToSave, logNotes]
         );
 
-        // 6. COMMIT SEKARANG (Agar data tersimpan dulu di DB)
         await connection.commit();
 
-        // 7. RESPON KE CLIENT SEGERA (Agar HP Mitra tidak timeout/Network Error)
-        // Kita kirim respon dulu, baru jalankan proses notifikasi di background
+        // 7. RESPON KE CLIENT (Mitra)
         res.status(200).json({
             success: true,
-            message: `Status berhasil diperbarui ke ${status}`,
-            data: { orderId: id, status, proof_image_url: proofImageUrl }
+            message: responseMessage,
+            data: { orderId: id, status: statusToSave, proof_image_url: proofImageUrl }
         });
 
-        // 8. PROSES NOTIFIKASI (Tanpa await agar tidak menahan response API)
+        // 8. PROSES NOTIFIKASI FCM (Background Process)
         if (customerFcm) {
             const statusMap = {
                 'accepted': 'telah diterima oleh teknisi',
-                'on_the_way': 'sedang menuju lokasi Anda 🛵',
-                'working': 'sedang dikerjakan 🛠️',
-                'completed': 'telah selesai dikerjakan ✅'
+                'on_the_way': 'sedang menuju lokasi Anda ',
+                'working': 'sedang dikerjakan ',
+                'completed': 'telah selesai dikerjakan dan menunggu konfirmasi Anda ✅'
             };
 
             const title = "Update Pesanan 🔔";
             const body = `Halo ${customerName}, pesanan Anda ${statusMap[status] || status}`;
 
-            // Panggil fungsi tanpa await
             sendPushNotification(customerFcm, title, body, {
                 orderId: String(id),
                 type: "ORDER_STATUS_UPDATE",
-                status: String(status)
+                status: String(statusToSave)
             }).catch(err => console.error("❌ Background FCM Error:", err.message));
         }
 
@@ -280,9 +284,8 @@ exports.updateOrderStatus = async (req, res) => {
         if (req.file) fs.unlinkSync(req.file.path);
 
         console.error("🔥 Error Update Status:", error);
-        // Pastikan respon belum terkirim sebelum mengirim error
         if (!res.headersSent) {
-            res.status(500).json({ success: false, message: "Terjadi kesalahan pada server." });
+            res.status(500).json({ success: false, message: "Terjadi kesalahan pada server.", error: error.message });
         }
     } finally {
         connection.release();
