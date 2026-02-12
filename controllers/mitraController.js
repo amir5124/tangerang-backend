@@ -8,26 +8,29 @@ exports.getMitraDashboard = async (req, res) => {
     const { id } = req.params; // store_id
 
     try {
-        // 1. QUERY STATISTIK
+        console.log(`\n[DEBUG] Fetching Dashboard for Store ID: ${id}`);
+
+        // 1. QUERY STATISTIK (DIPERBAIKI)
         const statsQuery = `
             SELECT 
                 s.store_name,
-                IFNULL(MAX(w.balance), 0) as balance,
-                IFNULL(SUM(CASE WHEN o.status = 'completed' THEN o.total_price ELSE 0 END), 0) as revenue,
-                COUNT(CASE WHEN o.status = 'completed' THEN 1 END) as completed_jobs,
-                COUNT(CASE WHEN o.status IN ('pending', 'accepted', 'on_the_way', 'working') THEN 1 END) as active_jobs,
-                IFNULL(AVG(r.rating), 0) as avg_rating,
-                COUNT(DISTINCT r.id) as total_reviews
+                s.user_id,
+                -- Ambil Saldo Langsung
+                IFNULL((SELECT balance FROM wallets WHERE user_id = s.user_id LIMIT 1), 0) as balance,
+                
+                -- Hitung Statistik Order secara terpisah agar tidak duplikat dengan Review
+                IFNULL((SELECT SUM(total_price) FROM orders WHERE store_id = s.id AND status = 'completed'), 0) as revenue,
+                (SELECT COUNT(*) FROM orders WHERE store_id = s.id AND status = 'completed') as completed_jobs,
+                (SELECT COUNT(*) FROM orders WHERE store_id = s.id AND status IN ('pending', 'accepted', 'on_the_way', 'working')) as active_jobs,
+                
+                -- Hitung Statistik Review secara terpisah
+                IFNULL((SELECT AVG(rating) FROM reviews WHERE store_id = s.id), 0) as avg_rating,
+                (SELECT COUNT(*) FROM reviews WHERE store_id = s.id) as total_reviews
             FROM stores s
-            LEFT JOIN wallets w ON s.user_id = w.user_id
-            LEFT JOIN orders o ON s.id = o.store_id
-            LEFT JOIN reviews r ON s.id = r.store_id
             WHERE s.id = ?
-            GROUP BY s.id
         `;
 
-        // 2. QUERY DETAIL ORDER TERBARU
-        // PERUBAHAN: o.id as order_id diganti menjadi o.id agar sinkron dengan frontend
+        // 2. QUERY DETAIL ORDER TERBARU (Sudah cukup oke, tapi kita pastikan efisien)
         const recentOrdersQuery = `
             SELECT 
                 o.id, 
@@ -36,9 +39,7 @@ exports.getMitraDashboard = async (req, res) => {
                 o.scheduled_date,
                 o.scheduled_time,
                 u.full_name as customer_name,
-                u.phone_number as customer_phone,
-                (SELECT service_name FROM order_items WHERE order_id = o.id LIMIT 1) as service_name,
-                (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) as total_items
+                (SELECT service_name FROM order_items WHERE order_id = o.id LIMIT 1) as service_name
             FROM orders o
             JOIN users u ON o.customer_id = u.id
             WHERE o.store_id = ?
@@ -55,6 +56,9 @@ exports.getMitraDashboard = async (req, res) => {
 
         const stats = statsResults[0];
 
+        // LOGGING UNTUK CROSS-CHECK
+        console.log(`[DEBUG] Dashboard Stats - Balance: ${stats.balance}, Revenue: ${stats.revenue}, Jobs: ${stats.completed_jobs}`);
+
         res.json({
             success: true,
             data: {
@@ -62,10 +66,10 @@ exports.getMitraDashboard = async (req, res) => {
                 stats: {
                     balance: parseFloat(stats.balance),
                     revenue: parseFloat(stats.revenue),
-                    completed_jobs: stats.completed_jobs,
-                    active_jobs: stats.active_jobs,
+                    completed_jobs: parseInt(stats.completed_jobs),
+                    active_jobs: parseInt(stats.active_jobs),
                     rating: parseFloat(stats.avg_rating).toFixed(1),
-                    total_reviews: stats.total_reviews
+                    total_reviews: parseInt(stats.total_reviews)
                 },
                 recent_orders: ordersResults
             }

@@ -10,12 +10,17 @@ cron.schedule('0 * * * *', async () => {
     try {
         // Cari order yang 'completed' tapi belum cair dan sudah lewat 24 jam
         // Indikator belum cair: tidak ada history 'credit' di wallet_transactions untuk order ini
+        // Ganti query expiredOrders di Cron Job menjadi ini:
         const [expiredOrders] = await connection.execute(`
-            SELECT id FROM orders 
-            WHERE status = 'completed' 
-            AND id NOT IN (SELECT CAST(SUBSTRING_INDEX(description, '#', -1) AS UNSIGNED) FROM wallet_transactions)
-            AND TIMESTAMPDIFF(HOUR, order_date, NOW()) >= 24
-        `);
+    SELECT id FROM orders 
+    WHERE status = 'completed' 
+    AND id NOT IN (
+        SELECT CAST(SUBSTRING_INDEX(description, '#', -1) AS UNSIGNED) 
+        FROM wallet_transactions 
+        WHERE description LIKE 'Penghasilan Order #%'
+    )
+    AND TIMESTAMPDIFF(HOUR, order_date, NOW()) >= 24
+`);
 
         for (const order of expiredOrders) {
             await connection.beginTransaction();
