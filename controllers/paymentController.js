@@ -268,24 +268,26 @@ exports.getPaymentHistory = async (req, res) => {
     const connection = await db.getConnection();
 
     try {
+        // Di dalam paymentController.js (fungsi getPaymentHistory)
         const sql = `
-            SELECT 
-                o.id AS order_id,
-                o.scheduled_date,
-                o.scheduled_time,
-                o.status AS order_status,
-                o.total_price,
-                s.name AS mitra_name,
-                p.payment_method,
-                p.payment_status,
-                p.pdf_url,
-                p.payment_details,
-                p.expired_at
-            FROM orders o
-            LEFT JOIN payments p ON o.id = p.order_id
-            LEFT JOIN stores s ON o.store_id = s.id
-            WHERE o.customer_id = ?
-            ORDER BY o.id DESC`;
+SELECT 
+    o.id AS order_id,
+    o.scheduled_date,
+    o.scheduled_time,
+    o.status AS order_status,
+    o.total_price,
+    s.store_name AS mitra_name, -- GANTI s.name MENJADI s.store_name
+    p.payment_method,
+    p.payment_status,
+    p.pdf_url,
+    p.payment_details,
+    p.expired_at
+FROM orders o
+LEFT JOIN payments p ON o.id = p.order_id
+LEFT JOIN stores s ON o.store_id = s.id
+WHERE o.customer_id = ?
+ORDER BY o.id DESC
+`;
 
         const [rows] = await connection.execute(sql, [customer_id]);
 
