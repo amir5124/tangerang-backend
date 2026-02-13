@@ -72,17 +72,30 @@ const releaseFundsToMitra = async (connection, orderId) => {
 
 exports.createOrder = async (req, res) => {
     const {
-        customer_id, store_id, metode_pembayaran, jenisGedung,
-        jadwal, lokasi, rincian_biaya, layananTerpilih, catatan
+        customer_id,
+        store_id,
+        metode_pembayaran,
+        jenisGedung,
+        jadwal,
+        lokasi,
+        rincian_biaya,
+        layananTerpilih,
+        catatan,
+        kontak // Asumsi ada data kontak untuk keperluan payment
     } = req.body;
 
     const connection = await db.getConnection();
-    await connection.beginTransaction();
+
     try {
-        // TAMBAHAN: Memasukkan lat_customer dan lng_customer ke dalam query
+        await connection.beginTransaction();
+
+        // 1. INSERT KE TABEL ORDERS
+        // Status diset 'unpaid' agar tidak langsung masuk ke aplikasi Mitra
         const sqlOrder = `INSERT INTO orders 
-            (customer_id, store_id, scheduled_date, scheduled_time, building_type, address_customer, lat_customer, lng_customer, total_price, platform_fee, service_fee, status, customer_notes) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`;
+            (customer_id, store_id, scheduled_date, scheduled_time, building_type, 
+             address_customer, lat_customer, lng_customer, total_price, 
+             platform_fee, service_fee, status, customer_notes, items) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?)`;
 
         const [orderResult] = await connection.execute(sqlOrder, [
             customer_id,
@@ -96,29 +109,66 @@ exports.createOrder = async (req, res) => {
             rincian_biaya.subtotal_layanan,
             rincian_biaya.biaya_layanan_app,
             rincian_biaya.biaya_transaksi,
-            catatan
+            catatan || null,
+            JSON.stringify(layananTerpilih) // Simpan snapshot layanan dalam bentuk JSON
         ]);
 
         const newOrderId = orderResult.insertId;
+
+        // 2. INSERT KE TABEL ORDER_ITEMS (Rincian per item)
         const sqlItem = `INSERT INTO order_items (order_id, service_name, qty, price_satuan, subtotal) VALUES (?, ?, ?, ?, ?)`;
         for (const item of layananTerpilih) {
-            await connection.execute(sqlItem, [newOrderId, item.nama, item.qty, item.hargaSatuan, (item.qty * item.hargaSatuan)]);
+            await connection.execute(sqlItem, [
+                newOrderId,
+                item.nama,
+                item.qty,
+                item.hargaSatuan,
+                (item.qty * item.hargaSatuan)
+            ]);
         }
 
-        const method = metode_pembayaran === 'QRIS' ? 'midtrans' : 'manual_transfer';
+        // 3. INSERT KE TABEL PAYMENTS
+        // Menggunakan status 'pending' pada payment (menunggu dibayar)
+        // payment_method disesuaikan dengan integrasi payment gateway (misal: LinkQu/Midtrans)
+        const sqlPayment = `INSERT INTO payments 
+            (order_id, customer_id, payment_method, gross_amount, payment_status) 
+            VALUES (?, ?, ?, ?, 'pending')`;
+
+        await connection.execute(sqlPayment, [
+            newOrderId,
+            customer_id,
+            metode_pembayaran,
+            rincian_biaya.total_akhir,
+        ]);
+
+        // 4. LOG STATUS AWAL
         await connection.execute(
-            `INSERT INTO payments (order_id, customer_id, payment_method, gross_amount, payment_status) VALUES (?, ?, ?, ?, 'pending')`,
-            [newOrderId, customer_id, method, rincian_biaya.total_akhir]
+            "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'unpaid', 'Pesanan dibuat, menunggu pembayaran pelanggan')",
+            [newOrderId]
         );
 
         await connection.commit();
-        res.status(201).json({ success: true, order_id: newOrderId });
-    } catch (error) {
-        await connection.rollback();
-        res.status(500).json({ success: false, error: error.message });
-    } finally { connection.release(); }
-};
 
+        console.log(`[SUCCESS] Order #${newOrderId} created with status UNPAID`);
+
+        res.status(201).json({
+            success: true,
+            message: "Pesanan berhasil dibuat",
+            order_id: newOrderId
+        });
+
+    } catch (error) {
+        if (connection) await connection.rollback();
+        console.error("❌ Error createOrder:", error.message);
+        res.status(500).json({
+            success: false,
+            message: "Gagal membuat pesanan",
+            error: error.message
+        });
+    } finally {
+        if (connection) connection.release();
+    }
+};
 
 exports.getOrderDetail = async (req, res) => {
     const { id } = req.params;

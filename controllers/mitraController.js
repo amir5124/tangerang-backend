@@ -24,8 +24,9 @@ exports.getMitraDashboard = async (req, res) => {
             -- Pekerjaan Selesai (Hanya yang sudah dikonfirmasi Customer)
             (SELECT COUNT(*) FROM orders WHERE store_id = s.id AND status = 'completed') as completed_jobs,
             
-            -- Pekerjaan yang sedang berjalan (Accepted, OTW)
-            (SELECT COUNT(*) FROM orders WHERE store_id = s.id AND status IN ('accepted', 'on_the_way')) as active_jobs,
+            -- PEKERJAAN AKTIF (Sudah bayar & perlu tindakan: Pending, Accepted, OTW, Working)
+            -- Menghilangkan 'unpaid' dari hitungan ini
+            (SELECT COUNT(*) FROM orders WHERE store_id = s.id AND status IN ('pending', 'accepted', 'on_the_way', 'working')) as active_jobs,
     
             -- PEKERJAAN MENUNGGU KONFIRMASI (Sudah diupload bukti tapi belum completed)
             (SELECT COUNT(*) FROM orders WHERE store_id = s.id AND status = 'working' AND proof_image_url IS NOT NULL) as pending_confirmation,
@@ -35,7 +36,9 @@ exports.getMitraDashboard = async (req, res) => {
         FROM stores s
         WHERE s.id = ?
     `;
-        // 2. QUERY DETAIL ORDER TERBARU (Sudah cukup oke, tapi kita pastikan efisien)
+
+        // 2. QUERY DETAIL ORDER TERBARU (DIPERBAIKI)
+        // Menambahkan filter status != 'unpaid' agar tidak muncul di aplikasi Mitra
         const recentOrdersQuery = `
             SELECT 
                 o.id, 
@@ -47,7 +50,8 @@ exports.getMitraDashboard = async (req, res) => {
                 (SELECT service_name FROM order_items WHERE order_id = o.id LIMIT 1) as service_name
             FROM orders o
             JOIN users u ON o.customer_id = u.id
-            WHERE o.store_id = ?
+            WHERE o.store_id = ? 
+            AND o.status != 'unpaid'
             ORDER BY o.order_date DESC
             LIMIT 5
         `;
@@ -62,7 +66,7 @@ exports.getMitraDashboard = async (req, res) => {
         const stats = statsResults[0];
 
         // LOGGING UNTUK CROSS-CHECK
-        console.log(`[DEBUG] Dashboard Stats - Balance: ${stats.balance}, Revenue: ${stats.revenue}, Jobs: ${stats.completed_jobs}`);
+        console.log(`[DEBUG] Dashboard Stats - Balance: ${stats.balance}, Revenue: ${stats.revenue}, Active Jobs (Excl. Unpaid): ${stats.active_jobs}`);
 
         res.json({
             success: true,
@@ -85,7 +89,6 @@ exports.getMitraDashboard = async (req, res) => {
         res.status(500).json({ success: false, error: err.message });
     }
 };
-
 /**
  * PROFILE: Mengambil data profil lengkap mitra untuk form edit
  */
