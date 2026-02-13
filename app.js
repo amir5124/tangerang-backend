@@ -44,6 +44,7 @@ app.use(express.urlencoded({ extended: true }));
 // --- 3. FILES & STATIC FOLDERS ---
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/uploads/services', express.static(path.join(__dirname, 'uploads/services')));
+app.use('/uploads/work_evidence', express.static(path.join(__dirname, 'uploads/work_evidence')));
 
 // --- 4. ROUTE PENGETESAN ---
 app.get('/api', (req, res) => {
