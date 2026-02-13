@@ -31,16 +31,29 @@ exports.createPayment = async (req, res) => {
 
         // 2. SIMPAN KE TABEL ORDERS 
         // PERUBAHAN: Status awal diset 'unpaid' agar tidak muncul di aplikasi Mitra
+        // 2. SIMPAN KE TABEL ORDERS 
+        // PERBAIKAN: Tambahkan lat_customer dan lng_customer di sini
         const sqlOrder = `INSERT INTO orders 
-            (customer_id, store_id, scheduled_date, scheduled_time, building_type, address_customer, total_price, platform_fee, service_fee, status, customer_notes, items) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?)`;
+(customer_id, store_id, scheduled_date, scheduled_time, building_type, 
+ address_customer, lat_customer, lng_customer, total_price, 
+ platform_fee, service_fee, status, customer_notes, items) 
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?)`;
 
-        console.log("DEBUG: Executing Order Insert with status 'unpaid'...");
+        console.log("DEBUG: Executing Order Insert with Coordinates...");
         const [orderResult] = await connection.execute(sqlOrder, [
-            customer_id, store_id, jadwal.tanggal, jadwal.waktu, jenisGedung,
-            lokasi.alamatLengkap, rincian_biaya.subtotal_layanan,
-            rincian_biaya.biaya_layanan_app, rincian_biaya.biaya_transaksi,
-            catatan || null, JSON.stringify(layananTerpilih)
+            customer_id,
+            store_id,
+            jadwal.tanggal,
+            jadwal.waktu,
+            jenisGedung,
+            lokasi.alamatLengkap,
+            lokasi.latitude || null,  // Mapping Latitude
+            lokasi.longitude || null, // Mapping Longitude
+            rincian_biaya.subtotal_layanan,
+            rincian_biaya.biaya_layanan_app,
+            rincian_biaya.biaya_transaksi,
+            catatan || null,
+            JSON.stringify(layananTerpilih)
         ]);
 
         const newOrderId = orderResult.insertId;
