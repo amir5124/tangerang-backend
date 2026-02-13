@@ -79,14 +79,24 @@ exports.createOrder = async (req, res) => {
     const connection = await db.getConnection();
     await connection.beginTransaction();
     try {
+        // TAMBAHAN: Memasukkan lat_customer dan lng_customer ke dalam query
         const sqlOrder = `INSERT INTO orders 
-            (customer_id, store_id, scheduled_date, scheduled_time, building_type, address_customer, total_price, platform_fee, service_fee, status, customer_notes) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`;
+            (customer_id, store_id, scheduled_date, scheduled_time, building_type, address_customer, lat_customer, lng_customer, total_price, platform_fee, service_fee, status, customer_notes) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`;
 
         const [orderResult] = await connection.execute(sqlOrder, [
-            customer_id, store_id, jadwal.tanggal, jadwal.waktu, jenisGedung,
-            lokasi.alamatLengkap, rincian_biaya.subtotal_layanan,
-            rincian_biaya.biaya_layanan_app, rincian_biaya.biaya_transaksi, catatan
+            customer_id,
+            store_id,
+            jadwal.tanggal,
+            jadwal.waktu,
+            jenisGedung,
+            lokasi.alamatLengkap,
+            lokasi.latitude,  // Mapping ke lat_customer
+            lokasi.longitude, // Mapping ke lng_customer
+            rincian_biaya.subtotal_layanan,
+            rincian_biaya.biaya_layanan_app,
+            rincian_biaya.biaya_transaksi,
+            catatan
         ]);
 
         const newOrderId = orderResult.insertId;
@@ -108,6 +118,7 @@ exports.createOrder = async (req, res) => {
         res.status(500).json({ success: false, error: error.message });
     } finally { connection.release(); }
 };
+
 
 exports.getOrderDetail = async (req, res) => {
     const { id } = req.params;
