@@ -10,7 +10,7 @@ exports.getMitraDashboard = async (req, res) => {
     try {
         console.log(`\n[DEBUG] Fetching Dashboard for Store ID: ${id}`);
 
-        // 1. QUERY STATISTIK (DIPERBAIKI)
+        // 1. QUERY STATISTIK (DIPERBAIKI & LENGKAP)
         const statsQuery = `
         SELECT 
             s.store_name,
@@ -25,7 +25,6 @@ exports.getMitraDashboard = async (req, res) => {
             (SELECT COUNT(*) FROM orders WHERE store_id = s.id AND status = 'completed') as completed_jobs,
             
             -- PEKERJAAN AKTIF (Sudah bayar & perlu tindakan: Pending, Accepted, OTW, Working)
-            -- Menghilangkan 'unpaid' dari hitungan ini
             (SELECT COUNT(*) FROM orders WHERE store_id = s.id AND status IN ('pending', 'accepted', 'on_the_way', 'working')) as active_jobs,
     
             -- PEKERJAAN MENUNGGU KONFIRMASI (Sudah diupload bukti tapi belum completed)
@@ -37,13 +36,13 @@ exports.getMitraDashboard = async (req, res) => {
         WHERE s.id = ?
     `;
 
-        // 2. QUERY DETAIL ORDER TERBARU (DIPERBAIKI)
-        // Menambahkan filter status != 'unpaid' agar tidak muncul di aplikasi Mitra
+        // 2. QUERY DETAIL ORDER TERBARU (DENGAN PROOF_IMAGE_URL)
         const recentOrdersQuery = `
             SELECT 
                 o.id, 
                 o.total_price,
                 o.status,
+                o.proof_image_url, -- PENTING: Agar UI Mitra bisa deteksi status "Menunggu Konfirmasi"
                 o.scheduled_date,
                 o.scheduled_time,
                 u.full_name as customer_name,
@@ -66,7 +65,7 @@ exports.getMitraDashboard = async (req, res) => {
         const stats = statsResults[0];
 
         // LOGGING UNTUK CROSS-CHECK
-        console.log(`[DEBUG] Dashboard Stats - Balance: ${stats.balance}, Revenue: ${stats.revenue}, Active Jobs (Excl. Unpaid): ${stats.active_jobs}`);
+        console.log(`[DEBUG] Dashboard Stats - Balance: ${stats.balance}, Active: ${stats.active_jobs}, Pending Conf: ${stats.pending_confirmation}`);
 
         res.json({
             success: true,
@@ -77,6 +76,7 @@ exports.getMitraDashboard = async (req, res) => {
                     revenue: parseFloat(stats.revenue),
                     completed_jobs: parseInt(stats.completed_jobs),
                     active_jobs: parseInt(stats.active_jobs),
+                    pending_confirmation: parseInt(stats.pending_confirmation), // DATA TAMBAHAN
                     rating: parseFloat(stats.avg_rating).toFixed(1),
                     total_reviews: parseInt(stats.total_reviews)
                 },
