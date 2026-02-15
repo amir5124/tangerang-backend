@@ -25,6 +25,7 @@ router.get('/', mitraController.getAllMitra);
 router.get('/:id', mitraController.getMitraDetail);
 
 router.get('/dashboard/:id', mitraController.getMitraDashboard);
+router.get('/orders-history/:store_id', mitraController.getAllHistory);
 
 // --- KELOMPOK 2: MITRA MANAGEMENT ---
 

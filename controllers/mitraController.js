@@ -89,6 +89,49 @@ exports.getMitraDashboard = async (req, res) => {
         res.status(500).json({ success: false, error: err.message });
     }
 };
+
+// controllers/orderController.js
+
+exports.getAllHistory = async (req, res) => {
+    const { store_id } = req.params;
+
+    // Mengambil limit dari query string, misal: ?limit=20
+    // Jika tidak ada limit, kita berikan angka besar (misal 100) sebagai "tanpa batas" yang aman
+    const limit = req.query.limit ? parseInt(req.query.limit) : 100;
+
+    try {
+        const [orders] = await db.execute(`
+            SELECT 
+                id, 
+                customer_name, 
+                service_name, 
+                total_items, 
+                total_price, 
+                status, 
+                proof_image_url,
+                scheduled_date, 
+                scheduled_time,
+                updated_at,
+                created_at
+            FROM orders 
+            WHERE store_id = ? 
+            ORDER BY created_at DESC 
+            LIMIT ?
+        `, [store_id, limit]);
+
+        return res.status(200).json({
+            success: true,
+            message: "Riwayat pesanan berhasil diambil",
+            data: orders
+        });
+    } catch (error) {
+        console.error("❌ Error getAllHistory:", error.message);
+        return res.status(500).json({
+            success: false,
+            message: "Gagal mengambil riwayat pesanan"
+        });
+    }
+};
 /**
  * PROFILE: Mengambil data profil lengkap mitra untuk form edit
  */
