@@ -8,5 +8,6 @@ router.post('/login', authController.login);
 
 // Tambahkan ini:
 router.post('/logout', authenticateToken, authController.logout);
+router.put('/update-profile', authController.updateProfile);
 
 module.exports = router;

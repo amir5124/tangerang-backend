@@ -144,3 +144,48 @@ exports.logout = async (req, res) => {
         res.status(500).json({ success: false, error: error.message });
     }
 };
+
+exports.updateProfile = async (req, res) => {
+    const { user_id, full_name, email, phone_number } = req.body;
+
+    try {
+        console.log(`\n[DEBUG] Updating User Profile for UID: ${user_id}`);
+
+        // 1. Cek apakah email atau phone baru sudah dipakai user lain
+        const [existing] = await db.query(
+            'SELECT id FROM users WHERE (email = ? OR phone_number = ?) AND id != ?',
+            [email, phone_number, user_id]
+        );
+
+        if (existing.length > 0) {
+            return res.status(400).json({
+                success: false,
+                message: "Email atau Nomor HP sudah digunakan oleh akun lain"
+            });
+        }
+
+        // 2. Update data di tabel users
+        const [result] = await db.query(
+            'UPDATE users SET full_name = ?, email = ?, phone_number = ? WHERE id = ?',
+            [full_name, email, phone_number, user_id]
+        );
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ success: false, message: "User tidak ditemukan" });
+        }
+
+        res.json({
+            success: true,
+            message: "Profil personal berhasil diperbarui",
+            user: {
+                full_name,
+                email,
+                phone_number
+            }
+        });
+
+    } catch (error) {
+        console.error("❌ Update Profile Error:", error.message);
+        res.status(500).json({ success: false, message: "Terjadi kesalahan server" });
+    }
+};
