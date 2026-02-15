@@ -94,28 +94,29 @@ exports.getMitraDashboard = async (req, res) => {
 
 exports.getAllHistory = async (req, res) => {
     const { store_id } = req.params;
-
-    // Mengambil limit dari query string, misal: ?limit=20
-    // Jika tidak ada limit, kita berikan angka besar (misal 100) sebagai "tanpa batas" yang aman
     const limit = req.query.limit ? parseInt(req.query.limit) : 100;
 
     try {
         const [orders] = await db.execute(`
             SELECT 
-                id, 
-                customer_name, 
-                service_name, 
-                total_items, 
-                total_price, 
-                status, 
-                proof_image_url,
-                scheduled_date, 
-                scheduled_time,
-                updated_at,
-                created_at
-            FROM orders 
-            WHERE store_id = ? 
-            ORDER BY created_at DESC 
+                o.id, 
+                u.full_name AS customer_name, 
+                s.service_name, 
+                o.total_price, 
+                o.status, 
+                o.proof_image_url,
+                o.scheduled_date, 
+                o.scheduled_time,
+                o.items,
+                o.updated_at,
+                o.order_date AS created_at,
+                -- Menghitung total item dari JSON jika ada, jika tidak default 1
+                COALESCE(JSON_LENGTH(o.items), 1) AS total_items
+            FROM orders o
+            JOIN users u ON o.customer_id = u.id
+            LEFT JOIN services s ON o.service_id = s.id
+            WHERE o.store_id = ? 
+            ORDER BY o.order_date DESC 
             LIMIT ?
         `, [store_id, limit]);
 
