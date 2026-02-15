@@ -94,10 +94,17 @@ exports.getMitraDashboard = async (req, res) => {
 
 exports.getAllHistory = async (req, res) => {
     const { store_id } = req.params;
-    const limit = req.query.limit ? parseInt(req.query.limit) : 100;
+
+    // 1. Pastikan limit adalah angka murni (Integer)
+    let limit = parseInt(req.query.limit);
+    if (isNaN(limit) || limit <= 0) {
+        limit = 100; // Default jika tidak ada input valid
+    }
 
     try {
-        const [orders] = await db.execute(`
+        // 2. Gunakan db.query (lebih fleksibel untuk LIMIT) 
+        // atau pastikan parameter dikirim sebagai array [store_id, limit]
+        const [orders] = await db.query(`
             SELECT 
                 o.id, 
                 u.full_name AS customer_name, 
@@ -110,15 +117,18 @@ exports.getAllHistory = async (req, res) => {
                 o.items,
                 o.updated_at,
                 o.order_date AS created_at,
-                -- Menghitung total item dari JSON jika ada, jika tidak default 1
-                COALESCE(JSON_LENGTH(o.items), 1) AS total_items
+                -- Cek jika kolom items ada dan merupakan JSON valid
+                CASE 
+                    WHEN o.items IS NOT NULL THEN JSON_LENGTH(o.items) 
+                    ELSE 1 
+                END AS total_items
             FROM orders o
             JOIN users u ON o.customer_id = u.id
             LEFT JOIN services s ON o.service_id = s.id
             WHERE o.store_id = ? 
             ORDER BY o.order_date DESC 
             LIMIT ?
-        `, [store_id, limit]);
+        `, [parseInt(store_id), limit]); // Paksa keduanya menjadi Integer
 
         return res.status(200).json({
             success: true,
@@ -129,7 +139,7 @@ exports.getAllHistory = async (req, res) => {
         console.error("❌ Error getAllHistory:", error.message);
         return res.status(500).json({
             success: false,
-            message: "Gagal mengambil riwayat pesanan"
+            message: "Gagal mengambil riwayat pesanan: " + error.message
         });
     }
 };
