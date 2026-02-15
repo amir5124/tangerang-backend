@@ -90,25 +90,19 @@ exports.getMitraDashboard = async (req, res) => {
     }
 };
 
-// controllers/orderController.js
 
 exports.getAllHistory = async (req, res) => {
     const { store_id } = req.params;
-
-    // 1. Pastikan limit adalah angka murni (Integer)
     let limit = parseInt(req.query.limit);
-    if (isNaN(limit) || limit <= 0) {
-        limit = 100; // Default jika tidak ada input valid
-    }
+    if (isNaN(limit) || limit <= 0) limit = 100;
 
     try {
-        // 2. Gunakan db.query (lebih fleksibel untuk LIMIT) 
-        // atau pastikan parameter dikirim sebagai array [store_id, limit]
         const [orders] = await db.query(`
             SELECT 
                 o.id, 
                 u.full_name AS customer_name, 
-                s.service_name, 
+                -- Ambil nama layanan dari order_items (Sama dengan logika Dashboard)
+                (SELECT service_name FROM order_items WHERE order_id = o.id LIMIT 1) as service_name, 
                 o.total_price, 
                 o.status, 
                 o.proof_image_url,
@@ -117,30 +111,24 @@ exports.getAllHistory = async (req, res) => {
                 o.items,
                 o.updated_at,
                 o.order_date AS created_at,
-                -- Cek jika kolom items ada dan merupakan JSON valid
                 CASE 
                     WHEN o.items IS NOT NULL THEN JSON_LENGTH(o.items) 
                     ELSE 1 
                 END AS total_items
             FROM orders o
             JOIN users u ON o.customer_id = u.id
-            LEFT JOIN services s ON o.service_id = s.id
             WHERE o.store_id = ? 
             ORDER BY o.order_date DESC 
             LIMIT ?
-        `, [parseInt(store_id), limit]); // Paksa keduanya menjadi Integer
+        `, [parseInt(store_id), limit]);
 
         return res.status(200).json({
             success: true,
-            message: "Riwayat pesanan berhasil diambil",
             data: orders
         });
     } catch (error) {
         console.error("❌ Error getAllHistory:", error.message);
-        return res.status(500).json({
-            success: false,
-            message: "Gagal mengambil riwayat pesanan: " + error.message
-        });
+        return res.status(500).json({ success: false, message: error.message });
     }
 };
 /**
