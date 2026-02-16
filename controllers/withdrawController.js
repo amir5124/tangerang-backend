@@ -1,4 +1,4 @@
-const db = require("../db/db");
+const db = require('../config/db');
 const axios = require("axios");
 const { LINKQU_CONFIG, E_WALLET_CODES, VA_CODES, generateSignature, logToFile } = require("../utils/linkquHelper");
 
