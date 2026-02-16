@@ -14,6 +14,7 @@ const mitraRoutes = require('./routes/mitraRoutes');
 const serviceRoutes = require('./routes/serviceRoutes');
 const orderRoutes = require('./routes/orderRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
+const withdrawRoutes = require('./routes/withdrawRoutes');
 
 const app = express();
 
@@ -61,6 +62,7 @@ app.use('/api/mitra', mitraRoutes);
 app.use('/api/services', serviceRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/payment', paymentRoutes);
+app.use('/api/withdraw', withdrawRoutes);
 
 // --- 6. SERVER LISTENING ---
 const PORT = process.env.PORT || 3000;
