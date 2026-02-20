@@ -26,5 +26,6 @@ router.post('/:id/update-status', upload.single('image'), orderController.update
 // --- ENDPOINT CUSTOMER (BARU) ---
 // Digunakan customer untuk konfirmasi selesai + kirim rating + cairkan dana
 router.post('/:id/complete-customer', orderController.customerCompleteOrder);
+router.get('/admin/all', orderController.getAllOrdersAdmin);
 
 module.exports = router;
