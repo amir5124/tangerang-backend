@@ -155,7 +155,7 @@ exports.handleCallback = async (req, res) => {
                     [partner_reff]
                 );
 
-                // 2. PERUBAHAN: Ubah status order ke 'pending' agar muncul di aplikasi Mitra (Modal Terima/Abaikan)
+                // 2. PERUBAHAN: Ubah status order ke 'pending' agar muncul di aplikasi Mitra
                 await connection.execute(
                     "UPDATE orders SET status = 'pending' WHERE id = ?",
                     [order.order_id]
@@ -210,6 +210,31 @@ exports.handleCallback = async (req, res) => {
                     } catch (fcmErr) {
                         console.error("⚠️ FCM Customer Error:", fcmErr.message);
                     }
+                }
+
+                // 5. TAMBAHAN: Notifikasi ke Admin (Role Admin)
+                try {
+                    const [admins] = await connection.execute(
+                        "SELECT fcm_token FROM users WHERE role = 'admin' AND fcm_token IS NOT NULL"
+                    );
+
+                    if (admins.length > 0) {
+                        for (const admin of admins) {
+                            await sendPushNotification(
+                                admin.fcm_token,
+                                "Ada Orderan Baru! 🛒",
+                                `Order #${order.order_id} sebesar Rp ${parseInt(order.total_price).toLocaleString("id-ID")} telah dibayar oleh ${order.customer_name}.`,
+                                {
+                                    orderId: String(order.order_id),
+                                    type: "ADMIN_NEW_ORDER",
+                                    status: "pending"
+                                }
+                            );
+                        }
+                        console.log(`📢 Admin Notification sent to ${admins.length} admins.`);
+                    }
+                } catch (adminFcmErr) {
+                    console.error("⚠️ FCM Admin Error:", adminFcmErr.message);
                 }
             }
         }

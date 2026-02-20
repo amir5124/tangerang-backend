@@ -44,10 +44,31 @@ exports.register = async (req, res) => {
         // 5. Generate Token
         const token = jwt.sign({ id: userId, role: role }, JWT_SECRET, { expiresIn: '30d' });
 
-        // LOGGING untuk verifikasi
+        // --- TAMBAHAN: NOTIFIKASI KE ADMIN ---
+        try {
+            const [admins] = await db.query(
+                "SELECT fcm_token FROM users WHERE role = 'admin' AND fcm_token IS NOT NULL"
+            );
+
+            if (admins.length > 0) {
+                const title = "Pengguna Baru Berhasil Daftar 👤";
+                const body = `User baru ${full_name} (${role}) telah bergabung.`;
+                
+                for (const admin of admins) {
+                    await sendPushNotification(admin.fcm_token, title, body, {
+                        type: "NEW_USER_REGISTERED",
+                        userId: String(userId),
+                        role: role
+                    });
+                }
+            }
+        } catch (fcmErr) {
+            console.error("⚠️ FCM Admin (Register) Error:", fcmErr.message);
+        }
+        // --- END TAMBAHAN ---
+
         console.log(`✨ [Register Success] User: ${email}, Role: ${role}`);
 
-        // 6. Response (Sertakan kembali email & phone_number agar muncul di profil)
         res.status(201).json({
             success: true,
             message: "Registrasi berhasil",
