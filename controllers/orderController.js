@@ -241,6 +241,30 @@ exports.getUserOrders = async (req, res) => {
     }
 };
 
+exports.getAllOrdersAdmin = async (req, res) => {
+    try {
+        const sql = `
+            SELECT 
+                o.id, 
+                o.status, 
+                o.total_price, 
+                o.scheduled_date, 
+                o.scheduled_time, 
+                o.order_date, 
+                s.store_name as mitra_name,
+                u.full_name as customer_name 
+            FROM orders o
+            JOIN stores s ON o.store_id = s.id
+            JOIN users u ON o.customer_id = u.id
+            ORDER BY o.order_date DESC`; // Urutkan dari yang terbaru
+            
+        const [rows] = await db.execute(sql);
+        res.status(200).json({ success: true, data: rows });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
+
 exports.updateOrderStatus = async (req, res) => {
     const { id } = req.params;
     const { status } = req.body; // Status yang dikirim dari aplikasi Mitra
