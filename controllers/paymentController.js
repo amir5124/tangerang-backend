@@ -222,7 +222,7 @@ exports.handleCallback = async (req, res) => {
                         for (const admin of admins) {
                             await sendPushNotification(
                                 admin.fcm_token,
-                                "Ada Orderan Baru! 🛒",
+                                "Ada Orderan Baru!",
                                 `Order #${order.order_id} sebesar Rp ${parseInt(order.total_price).toLocaleString("id-ID")} telah dibayar oleh ${order.customer_name}.`,
                                 {
                                     orderId: String(order.order_id),
