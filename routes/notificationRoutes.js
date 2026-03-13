@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const notificationController = require('../controllers/notificationController');
+const controller = require('../controllers/notificationController');
 
-router.post('/broadcast', notificationController.sendTopicBroadcast);
+router.post('/broadcast', controller.sendTopicBroadcast);
+router.post('/subscribe', controller.subscribeToTopic);
 
 module.exports = router;
