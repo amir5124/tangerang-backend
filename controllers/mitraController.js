@@ -1,5 +1,5 @@
 const db = require('../config/db');
-const { sendPushNotification } = require('../services/notificationService'); 
+const { sendPushNotification } = require('../services/notificationService');
 exports.getMitraDashboard = async (req, res) => {
     const { id } = req.params;
 
@@ -234,6 +234,7 @@ exports.deleteMitra = async (req, res) => {
 
 exports.approveMitra = async (req, res) => {
     const { id } = req.params;
+    console.log(`DEBUG: Memulai approval mitra dengan ID: ${id}`);
 
     try {
         const [storeData] = await db.query(`
@@ -243,11 +244,15 @@ exports.approveMitra = async (req, res) => {
             WHERE s.id = ?
         `, [id]);
 
-        if (storeData.length === 0) {
+        console.log("DEBUG: Hasil query storeData:", JSON.stringify(storeData));
+
+        if (!storeData || storeData.length === 0) {
+            console.log("DEBUG: Data mitra tidak ditemukan untuk ID:", id);
             return res.status(404).json({ success: false, message: "Data Mitra tidak ditemukan" });
         }
 
         const { store_name, fcm_token } = storeData[0];
+        console.log(`DEBUG: Data ditemukan - Nama Toko: ${store_name}, FCM Token: ${fcm_token ? 'TERSEDIA' : 'KOSONG/NULL'}`);
 
         const updateQuery = `
             UPDATE stores 
@@ -259,16 +264,18 @@ exports.approveMitra = async (req, res) => {
         `;
 
         const [result] = await db.query(updateQuery, [id]);
+        console.log("DEBUG: Hasil update database:", result.affectedRows, "baris terpengaruh");
 
         if (result.affectedRows === 0) {
             return res.status(400).json({ success: false, message: "Gagal memperbarui status" });
         }
 
-        if (fcm_token) {
+        if (fcm_token && fcm_token.trim() !== "") {
+            console.log("DEBUG: Mencoba mengirim notifikasi FCM...");
             try {
                 await sendPushNotification(
                     fcm_token,
-                    "Selamat! Akun Mitra Disetujui ",
+                    "Selamat! Akun Mitra Disetujui",
                     `Halo ${store_name}, pendaftaran Anda telah diterima. Sekarang Anda bisa mulai menerima pesanan!`,
                     {
                         storeId: String(id),
@@ -276,19 +283,21 @@ exports.approveMitra = async (req, res) => {
                         status: "approved"
                     }
                 );
-                console.log(`✅ Notifikasi persetujuan terkirim ke: ${store_name}`);
+                console.log(`✅ Notifikasi persetujuan berhasil dikirim ke: ${store_name}`);
             } catch (fcmErr) {
-                console.error("⚠️ FCM Mitra Approval Error:", fcmErr.message);
+                console.error("⚠️ Gagal mengirim FCM. Detail error:", fcmErr.message);
             }
+        } else {
+            console.log("DEBUG: Notifikasi dilewati karena FCM Token kosong atau null.");
         }
 
         res.json({
             success: true,
-            message: `Mitra ${store_name} berhasil disetujui dan notifikasi telah dikirim.`
+            message: `Mitra ${store_name} berhasil disetujui.`
         });
 
     } catch (err) {
-        console.error("❌ [Approve Mitra Error]:", err.message);
+        console.error("❌ CRITICAL ERROR [Approve Mitra]:", err);
         res.status(500).json({ success: false, error: err.message });
     }
 };
