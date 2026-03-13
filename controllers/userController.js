@@ -1,11 +1,7 @@
 const db = require('../config/db');
 
-// Controller untuk mengambil semua data pengguna (khusus Admin)
 exports.getAllUsers = async (req, res) => {
     try {
-        // Query untuk mengambil semua user. 
-        // Menggunakan LEFT JOIN agar user dengan role 'customer' tetap muncul 
-        // meskipun tidak punya data di tabel stores.
         const sql = `
             SELECT 
                 u.id, 
@@ -15,6 +11,7 @@ exports.getAllUsers = async (req, res) => {
                 u.role, 
                 u.fcm_token,
                 u.created_at,
+                s.id AS store_id,
                 s.store_name,
                 s.approval_status AS store_status,
                 s.category AS store_category
@@ -24,8 +21,7 @@ exports.getAllUsers = async (req, res) => {
         `;
 
         console.log("DEBUG: Admin fetching all users list...");
-        
-        // Menggunakan db.execute (lebih aman dan konsisten dengan controller order Anda)
+
         const [rows] = await db.execute(sql);
 
         res.status(200).json({
