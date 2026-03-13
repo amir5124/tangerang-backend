@@ -1,16 +1,11 @@
 const db = require('../config/db');
-
-/**
- * DASHBOARD: Mengambil statistik saldo, pendapatan, rating, dan jumlah pekerjaan.
- * Mengatasi Error 1055 dengan agregasi pada balance dan grouping yang tepat.
- */
+const { sendPushNotification } = require('../services/notificationService'); 
 exports.getMitraDashboard = async (req, res) => {
-    const { id } = req.params; // store_id
+    const { id } = req.params;
 
     try {
         console.log(`\n[DEBUG] Fetching Dashboard for Store ID: ${id}`);
 
-        // 1. QUERY STATISTIK (DIPERBAIKI & LENGKAP)
         const statsQuery = `
         SELECT 
             s.store_name,
@@ -35,8 +30,6 @@ exports.getMitraDashboard = async (req, res) => {
         FROM stores s
         WHERE s.id = ?
     `;
-
-        // 2. QUERY DETAIL ORDER TERBARU (DENGAN PROOF_IMAGE_URL)
         const recentOrdersQuery = `
             SELECT 
                 o.id, 
@@ -63,8 +56,6 @@ exports.getMitraDashboard = async (req, res) => {
         }
 
         const stats = statsResults[0];
-
-        // LOGGING UNTUK CROSS-CHECK
         console.log(`[DEBUG] Dashboard Stats - Balance: ${stats.balance}, Active: ${stats.active_jobs}, Pending Conf: ${stats.pending_confirmation}`);
 
         res.json({
@@ -131,9 +122,7 @@ exports.getAllHistory = async (req, res) => {
         return res.status(500).json({ success: false, message: error.message });
     }
 };
-/**
- * PROFILE: Mengambil data profil lengkap mitra untuk form edit
- */
+
 exports.getStoreProfile = async (req, res) => {
     const { id } = req.params;
     try {
@@ -145,9 +134,7 @@ exports.getStoreProfile = async (req, res) => {
     }
 };
 
-/**
- * UPDATE: Memperbarui profil toko (termasuk upload logo)
- */
+
 exports.updateStoreProfile = async (req, res) => {
     const { id } = req.params;
     const {
@@ -185,9 +172,7 @@ exports.updateStoreProfile = async (req, res) => {
     }
 };
 
-/**
- * PUBLIC: Mengambil semua mitra (bisa filter berdasarkan kategori)
- */
+
 exports.getAllMitra = async (req, res) => {
     const { category } = req.query;
     let query = `
@@ -211,9 +196,7 @@ exports.getAllMitra = async (req, res) => {
     }
 };
 
-/**
- * DETAIL: Mengambil detail satu toko beserta daftar layanannya
- */
+
 exports.getMitraDetail = async (req, res) => {
     const storeId = req.params.id;
     try {
@@ -226,9 +209,7 @@ exports.getMitraDetail = async (req, res) => {
     }
 };
 
-/**
- * ADMIN: Update & Delete Mitra
- */
+
 exports.updateMitra = async (req, res) => {
     const { store_name, description, address, is_active } = req.body;
     try {
@@ -248,5 +229,66 @@ exports.deleteMitra = async (req, res) => {
         res.json({ message: "Mitra berhasil dihapus" });
     } catch (err) {
         res.status(500).json({ error: err.message });
+    }
+};
+
+exports.approveMitra = async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        const [storeData] = await db.query(`
+            SELECT s.store_name, u.fcm_token 
+            FROM stores s 
+            JOIN users u ON s.user_id = u.id 
+            WHERE s.id = ?
+        `, [id]);
+
+        if (storeData.length === 0) {
+            return res.status(404).json({ success: false, message: "Data Mitra tidak ditemukan" });
+        }
+
+        const { store_name, fcm_token } = storeData[0];
+
+        const updateQuery = `
+            UPDATE stores 
+            SET 
+                approval_status = 'approved', 
+                is_active = 1, 
+                rejection_reason = NULL 
+            WHERE id = ?
+        `;
+
+        const [result] = await db.query(updateQuery, [id]);
+
+        if (result.affectedRows === 0) {
+            return res.status(400).json({ success: false, message: "Gagal memperbarui status" });
+        }
+
+        if (fcm_token) {
+            try {
+                await sendPushNotification(
+                    fcm_token,
+                    "Selamat! Akun Mitra Disetujui ",
+                    `Halo ${store_name}, pendaftaran Anda telah diterima. Sekarang Anda bisa mulai menerima pesanan!`,
+                    {
+                        storeId: String(id),
+                        type: "MITRA_APPROVED",
+                        status: "approved"
+                    }
+                );
+                console.log(`✅ Notifikasi persetujuan terkirim ke: ${store_name}`);
+            } catch (fcmErr) {
+                console.error("⚠️ FCM Mitra Approval Error:", fcmErr.message);
+            }
+        }
+
+        res.json({
+            success: true,
+            message: `Mitra ${store_name} berhasil disetujui dan notifikasi telah dikirim.`
+        });
+
+    } catch (err) {
+        console.error("❌ [Approve Mitra Error]:", err.message);
+        res.status(500).json({ success: false, error: err.message });
     }
 };

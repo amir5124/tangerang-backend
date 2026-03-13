@@ -22,11 +22,6 @@ exports.updateStoreProfile = async (req, res) => {
             return res.status(404).json({ message: "Data toko tidak ditemukan." });
         }
 
-        /**
-         * PERUBAHAN DI SINI:
-         * Menghapus 'approval_status = pending' dan 'is_active = 0'
-         * agar toko tetap bisa berjualan setelah update profil.
-         */
         const query = `
             UPDATE stores SET 
                 identity_number = ?, 
