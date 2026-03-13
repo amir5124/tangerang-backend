@@ -1,13 +1,10 @@
 const jwt = require('jsonwebtoken');
 const JWT_SECRET = process.env.JWT_SECRET || 'bad750e525b96e0efaf8bf2e4daa19515a2dcf76e047f0aa28bb35eebd767a08';
 
-/**
- * 1. Middleware Utama: Verifikasi Token
- * Digunakan di hampir semua rute yang membutuhkan login.
- */
+
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1]; // Format: "Bearer TOKEN"
+    const token = authHeader && authHeader.split(' ')[1]; 
 
     if (!token) {
         return res.status(401).json({
