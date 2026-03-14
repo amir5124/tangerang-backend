@@ -18,6 +18,7 @@
     "expo-server-sdk": "^3.15.0",
     "express": "^5.2.1",
     "firebase-admin": "^13.6.0",
+    "google-auth-library": "^10.6.1",
     "jsonwebtoken": "^9.0.3",
     "moment-timezone": "^0.6.0",
     "multer": "^2.0.2",

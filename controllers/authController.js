@@ -3,12 +3,11 @@ const db = require('../config/db');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { sendPushNotification } = require('../services/notificationService');
+const { OAuth2Client } = require('google-auth-library');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'bad750e525b96e0efaf8bf2e4daa19515a2dcf76e047f0aa28bb35eebd767a08';
 
-const generateToken = (user) => {
-    return jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
-};
+const client = new OAuth2Client("206607018424-u9a7v54du628kt7mmnlcclsvq3og33ce.apps.googleusercontent.com");
 
 exports.register = async (req, res) => {
     const { full_name, email, phone_number, password, role, fcm_token } = req.body;
@@ -156,14 +155,19 @@ exports.login = async (req, res) => {
 };
 
 exports.googleAuth = async (req, res) => {
-    const { idToken, role, fcm_token, targetRole } = req.body; // targetRole adalah role aplikasi (admin/mitra/customer)
+    const { idToken, role, fcm_token, targetRole } = req.body;
 
     try {
-        // 1. Verifikasi Token dari Firebase
-        const decodedToken = await admin.auth().verifyIdToken(idToken);
-        const { email, name } = decodedToken;
+        // 1. Verifikasi ID Token langsung ke Google
+        const ticket = await client.verifyIdToken({
+            idToken: idToken,
+            audience: "206607018424-u9a7v54du628kt7mmnlcclsvq3og33ce.apps.googleusercontent.com",
+        });
+        
+        const payload = ticket.getPayload();
+        const { email, name } = payload; // Mengambil email dan nama dari Google
 
-        // 2. Cek apakah user sudah ada
+        // 2. Cek apakah user sudah ada di database MySQL Anda
         const [rows] = await db.query("SELECT * FROM users WHERE email = ?", [email]);
         let user = rows[0];
 
@@ -178,7 +182,7 @@ exports.googleAuth = async (req, res) => {
 
             const userId = result.insertId;
 
-            // 3. Inisialisasi tambahan jika mitra (Sama dengan register biasa)
+            // 3. Inisialisasi tambahan jika mitra
             if (role === 'mitra') {
                 await db.query(
                     `INSERT INTO stores (user_id, store_name, category, address, latitude, longitude, approval_status, is_active) 
@@ -193,8 +197,7 @@ exports.googleAuth = async (req, res) => {
         } else {
             // --- SKENARIO LOGIN VIA GOOGLE ---
 
-            // 4. VALIDASI ROLE (Pagar utama)
-            // Jika user terdaftar sebagai 'customer' tapi coba login di aplikasi 'admin'
+            // 4. VALIDASI ROLE
             if (targetRole && user.role !== targetRole) {
                 return res.status(403).json({
                     success: false,
@@ -202,7 +205,7 @@ exports.googleAuth = async (req, res) => {
                 });
             }
 
-            // 5. Update FCM Token jika ada yang baru
+            // 5. Update FCM Token
             if (fcm_token) {
                 await db.query("UPDATE users SET fcm_token = ? WHERE id = ?", [fcm_token, user.id]);
             }
@@ -232,7 +235,7 @@ exports.googleAuth = async (req, res) => {
 
     } catch (error) {
         console.error("❌ Google Auth Error:", error.message);
-        res.status(401).json({ success: false, message: "Token Google tidak valid atau kadaluwarsa" });
+        res.status(401).json({ success: false, message: "Token Google tidak valid" });
     }
 };
 
