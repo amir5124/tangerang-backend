@@ -43,6 +43,8 @@ app.use(cors({
     credentials: true
 }));
 
+app.use('/api/assets', assetRoutes);
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
