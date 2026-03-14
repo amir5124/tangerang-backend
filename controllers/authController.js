@@ -7,6 +7,10 @@ const { OAuth2Client } = require('google-auth-library');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'bad750e525b96e0efaf8bf2e4daa19515a2dcf76e047f0aa28bb35eebd767a08';
 
+const generateToken = (user) => {
+    return jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
+};
+
 const client = new OAuth2Client("206607018424-u9a7v54du628kt7mmnlcclsvq3og33ce.apps.googleusercontent.com");
 
 exports.register = async (req, res) => {
