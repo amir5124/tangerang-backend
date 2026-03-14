@@ -1,8 +1,14 @@
+const admin = require('../config/firebaseConfig');
 const db = require('../config/db');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+import { sendPushNotification } from '../services/notificationService';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'bad750e525b96e0efaf8bf2e4daa19515a2dcf76e047f0aa28bb35eebd767a08';
+
+const generateToken = (user) => {
+    return jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
+};
 
 exports.register = async (req, res) => {
     const { full_name, email, phone_number, password, role, fcm_token } = req.body;
@@ -53,7 +59,7 @@ exports.register = async (req, res) => {
             if (admins.length > 0) {
                 const title = "Pengguna Baru Berhasil Daftar 👤";
                 const body = `User baru ${full_name} (${role}) telah bergabung.`;
-                
+
                 for (const admin of admins) {
                     await sendPushNotification(admin.fcm_token, title, body, {
                         type: "NEW_USER_REGISTERED",
@@ -146,6 +152,87 @@ exports.login = async (req, res) => {
     } catch (error) {
         console.error("❌ Login Error:", error.message);
         res.status(500).json({ success: false, error: error.message });
+    }
+};
+
+exports.googleAuth = async (req, res) => {
+    const { idToken, role, fcm_token, targetRole } = req.body; // targetRole adalah role aplikasi (admin/mitra/customer)
+
+    try {
+        // 1. Verifikasi Token dari Firebase
+        const decodedToken = await admin.auth().verifyIdToken(idToken);
+        const { email, name } = decodedToken;
+
+        // 2. Cek apakah user sudah ada
+        const [rows] = await db.query("SELECT * FROM users WHERE email = ?", [email]);
+        let user = rows[0];
+
+        if (!user) {
+            // --- SKENARIO REGISTER VIA GOOGLE ---
+            console.log(`🆕 [Google Register] Creating new user: ${email}`);
+
+            const [result] = await db.query(
+                "INSERT INTO users (full_name, email, phone_number, password, role, fcm_token) VALUES (?, ?, ?, ?, ?, ?)",
+                [name, email, null, 'GOOGLE_AUTH', role || 'admin', fcm_token || null]
+            );
+
+            const userId = result.insertId;
+
+            // 3. Inisialisasi tambahan jika mitra (Sama dengan register biasa)
+            if (role === 'mitra') {
+                await db.query(
+                    `INSERT INTO stores (user_id, store_name, category, address, latitude, longitude, approval_status, is_active) 
+                     VALUES (?, ?, ?, ?, 0, 0, 'pending', 0)`,
+                    [userId, `${name} Service`, 'ac', 'Alamat belum diatur']
+                );
+                await db.query('INSERT INTO wallets (user_id, balance) VALUES (?, 0)', [userId]);
+            }
+
+            const [newUser] = await db.query("SELECT * FROM users WHERE id = ?", [userId]);
+            user = newUser[0];
+        } else {
+            // --- SKENARIO LOGIN VIA GOOGLE ---
+
+            // 4. VALIDASI ROLE (Pagar utama)
+            // Jika user terdaftar sebagai 'customer' tapi coba login di aplikasi 'admin'
+            if (targetRole && user.role !== targetRole) {
+                return res.status(403).json({
+                    success: false,
+                    message: `Akses Ditolak. Akun Google ini terdaftar sebagai ${user.role}.`
+                });
+            }
+
+            // 5. Update FCM Token jika ada yang baru
+            if (fcm_token) {
+                await db.query("UPDATE users SET fcm_token = ? WHERE id = ?", [fcm_token, user.id]);
+            }
+        }
+
+        // 6. Ambil data Toko (untuk profil frontend)
+        let storeId = null;
+        if (user.role === 'mitra') {
+            const [stores] = await db.query('SELECT id FROM stores WHERE user_id = ?', [user.id]);
+            storeId = stores[0]?.id || null;
+        }
+
+        const token = generateToken(user);
+
+        res.status(200).json({
+            success: true,
+            token,
+            user: {
+                id: user.id,
+                full_name: user.full_name,
+                email: user.email,
+                role: user.role,
+                phone_number: user.phone_number,
+                store_id: storeId
+            }
+        });
+
+    } catch (error) {
+        console.error("❌ Google Auth Error:", error.message);
+        res.status(401).json({ success: false, message: "Token Google tidak valid atau kadaluwarsa" });
     }
 };
 
