@@ -71,7 +71,6 @@ app.use('/api/payment', paymentRoutes);
 app.use('/api/withdraw', withdrawRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/notifications', notificationRoutes);
-app.use('/api/assets', assetRoutes);
 
 // --- 6. SERVER LISTENING ---
 const PORT = process.env.PORT || 3000;
