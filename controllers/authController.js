@@ -2,7 +2,7 @@ const admin = require('../config/firebaseConfig');
 const db = require('../config/db');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-import { sendPushNotification } from '../services/notificationService';
+const { sendPushNotification } = require('../services/notificationService');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'bad750e525b96e0efaf8bf2e4daa19515a2dcf76e047f0aa28bb35eebd767a08';
 
