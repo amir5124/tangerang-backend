@@ -10,6 +10,6 @@ const upload = multer({
 });
 
 router.get('/', assetController.getAssets);
-router.post('/upload', upload.single('file'), assetController.uploadAndUpdateAsset);
+router.post('/upload-base64', assetController.uploadAndUpdateAssetBase64);
 
 module.exports = router;
