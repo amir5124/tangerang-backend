@@ -7,37 +7,47 @@ const { sendPushNotification } = require('../services/notificationService');
  * UPDATE: Sekarang mendukung otomatis membuat wallet jika belum ada (Upsert)
  */
 const releaseFundsToMitra = async (connection, orderId) => {
-    // 1. CEK EKSTRIM: Pastikan order ini BELUM PERNAH mencairkan dana
-    // Cari di history transaksi berdasarkan description unik
+    // 1. CEK EKSTRIM: Pastikan belum pernah dicairkan
     const [existingTx] = await connection.execute(
         "SELECT id FROM wallet_transactions WHERE description LIKE ?",
         [`%Order #${orderId}%`]
     );
 
     if (existingTx.length > 0) {
-        console.log(`[PREVENT] Order #${orderId} sudah pernah dicairkan. Menghentikan proses.`);
-        return false; // Beritahu pemanggil bahwa tidak ada dana yang dicairkan
+        console.log(`[PREVENT] Order #${orderId} sudah pernah dicairkan.`);
+        return false;
     }
 
-    // 2. Ambil detail biaya dan ID User Mitra
+    // 2. Ambil detail biaya (Termasuk discount_amount)
     const [order] = await connection.execute(
-        `SELECT o.total_price, s.user_id as mitra_user_id 
+        `SELECT o.total_price, o.discount_amount, s.user_id as mitra_user_id 
          FROM orders o 
          JOIN stores s ON o.store_id = s.id 
          WHERE o.id = ?`, [orderId]
     );
 
     if (order.length === 0) return false;
-    const { total_price, mitra_user_id } = order[0];
+    const { total_price, discount_amount, mitra_user_id } = order[0];
 
-    const total = parseFloat(total_price) || 0;
-    const netAmount = Math.floor(total * 0.7);
-    const platformFeeAmount = total - netAmount;
+    // LOGIKA VOUCHER:
+    // paidByCustomer = Harga yang dibayar user (sudah dipotong diskon di createOrder)
+    // discount = Nilai voucher
+    const paidByCustomer = parseFloat(total_price) || 0;
+    const discount = parseFloat(discount_amount) || 0;
+    
+    // grossOriginal = Harga asli sebelum diskon (untuk dasar bagi hasil Mitra)
+    const grossOriginal = paidByCustomer + discount;
+
+    // Mitra tetap dapat 70% dari harga asli (tidak rugi karena voucher)
+    const netAmount = Math.floor(grossOriginal * 0.7);
+    
+    // Komisi App adalah sisa dari uang yang masuk dikurangi jatah mitra
+    // (Otomatis berkurang karena paidByCustomer lebih kecil dari biasanya)
+    const platformFeeAmount = paidByCustomer - netAmount;
 
     // 3. Update Saldo (Upsert)
     const [walletCheck] = await connection.execute(
-        "SELECT id FROM wallets WHERE user_id = ?",
-        [mitra_user_id]
+        "SELECT id FROM wallets WHERE user_id = ?", [mitra_user_id]
     );
 
     let walletId;
@@ -55,10 +65,10 @@ const releaseFundsToMitra = async (connection, orderId) => {
         walletId = walletCheck[0].id;
     }
 
-    // 4. Catat history (Ini adalah bukti final agar tidak double)
+    // 4. Catat history & Update platform_fee final
     await connection.execute(
         "INSERT INTO wallet_transactions (wallet_id, amount, type, description) VALUES (?, ?, 'credit', ?)",
-        [walletId, netAmount, `Penghasilan Order #${orderId} (Bagi hasil 70%)`]
+        [walletId, netAmount, `Penghasilan Order #${orderId} (Bagi hasil 70% dari harga normal)`]
     );
 
     await connection.execute(
@@ -66,9 +76,8 @@ const releaseFundsToMitra = async (connection, orderId) => {
         [platformFeeAmount, orderId]
     );
 
-    return netAmount; // Kembalikan angka untuk kebutuhan notifikasi
+    return netAmount;
 };
-// --- EXPORTS ---
 
 exports.createOrder = async (req, res) => {
     const {
@@ -81,7 +90,7 @@ exports.createOrder = async (req, res) => {
         rincian_biaya,
         layananTerpilih,
         catatan,
-        kontak // Asumsi ada data kontak untuk keperluan payment
+        voucher_code // Input baru dari frontend
     } = req.body;
 
     const connection = await db.getConnection();
@@ -89,13 +98,48 @@ exports.createOrder = async (req, res) => {
     try {
         await connection.beginTransaction();
 
+        // --- LOGIKA VOUCHER START ---
+        let discountAmount = 0;
+        let appliedVoucherId = null;
+
+        if (voucher_code) {
+            const [vouchers] = await connection.execute(
+                "SELECT * FROM vouchers WHERE code = ? AND is_active = 1 AND expired_at > NOW()",
+                [voucher_code]
+            );
+
+            if (vouchers.length > 0) {
+                const v = vouchers[0];
+                
+                // Cek apakah user sudah pernah pakai voucher ini
+                const [usageCheck] = await connection.execute(
+                    "SELECT id FROM voucher_usages WHERE voucher_id = ? AND user_id = ?",
+                    [v.id, customer_id]
+                );
+
+                if (usageCheck.length === 0) {
+                    appliedVoucherId = v.id;
+                    // Hitung diskon berdasarkan subtotal layanan
+                    discountAmount = Math.floor(rincian_biaya.subtotal_layanan * (v.discount_percent / 100));
+                    
+                    // Cek limit maksimal diskon jika ada
+                    if (v.max_discount_amount && discountAmount > v.max_discount_amount) {
+                        discountAmount = v.max_discount_amount;
+                    }
+                }
+            }
+        }
+        
+        // Harga final yang harus dibayar customer
+        const finalTotalPrice = rincian_biaya.total_akhir - discountAmount;
+        // --- LOGIKA VOUCHER END ---
+
         // 1. INSERT KE TABEL ORDERS
-        // Status diset 'unpaid' agar tidak langsung masuk ke aplikasi Mitra
         const sqlOrder = `INSERT INTO orders 
             (customer_id, store_id, scheduled_date, scheduled_time, building_type, 
              address_customer, lat_customer, lng_customer, total_price, 
-             platform_fee, service_fee, status, customer_notes, items) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?)`;
+             platform_fee, service_fee, status, customer_notes, items, voucher_id, discount_amount) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?, ?, ?)`;
 
         const [orderResult] = await connection.execute(sqlOrder, [
             customer_id,
@@ -104,69 +148,120 @@ exports.createOrder = async (req, res) => {
             jadwal.waktu,
             jenisGedung,
             lokasi.alamatLengkap,
-            lokasi.latitude,  // Mapping ke lat_customer
-            lokasi.longitude, // Mapping ke lng_customer
-            rincian_biaya.subtotal_layanan,
-            rincian_biaya.biaya_layanan_app,
+            lokasi.latitude,
+            lokasi.longitude,
+            finalTotalPrice, // Total yang sudah dipotong diskon
+            rincian_biaya.biaya_layanan_app, // platform_fee sementara
             rincian_biaya.biaya_transaksi,
             catatan || null,
-            JSON.stringify(layananTerpilih) // Simpan snapshot layanan dalam bentuk JSON
+            JSON.stringify(layananTerpilih),
+            appliedVoucherId,
+            discountAmount
         ]);
 
         const newOrderId = orderResult.insertId;
 
-        // 2. INSERT KE TABEL ORDER_ITEMS (Rincian per item)
+        // 2. Catat penggunaan voucher jika valid
+        if (appliedVoucherId) {
+            await connection.execute(
+                "INSERT INTO voucher_usages (voucher_id, user_id, order_id) VALUES (?, ?, ?)",
+                [appliedVoucherId, customer_id, newOrderId]
+            );
+        }
+
+        // 3. INSERT KE TABEL ORDER_ITEMS
         const sqlItem = `INSERT INTO order_items (order_id, service_name, qty, price_satuan, subtotal) VALUES (?, ?, ?, ?, ?)`;
         for (const item of layananTerpilih) {
             await connection.execute(sqlItem, [
-                newOrderId,
-                item.nama,
-                item.qty,
-                item.hargaSatuan,
-                (item.qty * item.hargaSatuan)
+                newOrderId, item.nama, item.qty, item.hargaSatuan, (item.qty * item.hargaSatuan)
             ]);
         }
 
-        // 3. INSERT KE TABEL PAYMENTS
-        // Menggunakan status 'pending' pada payment (menunggu dibayar)
-        // payment_method disesuaikan dengan integrasi payment gateway (misal: LinkQu/Midtrans)
+        // 4. INSERT KE TABEL PAYMENTS
         const sqlPayment = `INSERT INTO payments 
             (order_id, customer_id, payment_method, gross_amount, payment_status) 
             VALUES (?, ?, ?, ?, 'pending')`;
 
         await connection.execute(sqlPayment, [
-            newOrderId,
-            customer_id,
-            metode_pembayaran,
-            rincian_biaya.total_akhir,
+            newOrderId, customer_id, metode_pembayaran, finalTotalPrice
         ]);
 
-        // 4. LOG STATUS AWAL
+        // 5. LOG STATUS AWAL
         await connection.execute(
-            "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'unpaid', 'Pesanan dibuat, menunggu pembayaran pelanggan')",
+            "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'unpaid', 'Pesanan dibuat')",
             [newOrderId]
         );
 
         await connection.commit();
-
-        console.log(`[SUCCESS] Order #${newOrderId} created with status UNPAID`);
-
-        res.status(201).json({
-            success: true,
-            message: "Pesanan berhasil dibuat",
-            order_id: newOrderId
-        });
+        res.status(201).json({ success: true, message: "Pesanan berhasil dibuat", order_id: newOrderId });
 
     } catch (error) {
         if (connection) await connection.rollback();
         console.error("❌ Error createOrder:", error.message);
-        res.status(500).json({
-            success: false,
-            message: "Gagal membuat pesanan",
-            error: error.message
-        });
+        res.status(500).json({ success: false, message: "Gagal membuat pesanan", error: error.message });
     } finally {
         if (connection) connection.release();
+    }
+};
+
+exports.validateVoucher = async (req, res) => {
+    // Kita gunakan user_id (merujuk ke users.id)
+    const { code, user_id, subtotal_layanan } = req.body;
+
+    try {
+        // 1. Cari voucher yang aktif
+        const [vouchers] = await db.execute(
+            "SELECT * FROM vouchers WHERE code = ? AND is_active = 1 AND expired_at > NOW()",
+            [code]
+        );
+
+        if (vouchers.length === 0) {
+            return res.status(404).json({ 
+                success: false, 
+                message: "Kode voucher tidak ditemukan atau sudah kedaluwarsa." 
+            });
+        }
+
+        const v = vouchers[0];
+
+        // 2. Cek apakah user (id) ini sudah pernah pakai voucher ini
+        const [usageCheck] = await db.execute(
+            "SELECT id FROM voucher_usages WHERE voucher_id = ? AND user_id = ?",
+            [v.id, user_id]
+        );
+
+        if (usageCheck.length > 0) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "Voucher ini sudah pernah Anda gunakan sebelumnya." 
+            });
+        }
+
+        // 3. Hitung besaran diskon
+        let discountAmount = Math.floor(subtotal_layanan * (v.discount_percent / 100));
+        
+        // Batasi jika ada maksimal diskon
+        if (v.max_discount_amount && discountAmount > v.max_discount_amount) {
+            discountAmount = parseFloat(v.max_discount_amount);
+        }
+
+        res.status(200).json({
+            success: true,
+            message: "Voucher berhasil diterapkan!",
+            data: {
+                voucher_id: v.id,
+                code: v.code,
+                discount_amount: discountAmount
+            }
+        });
+
+    } catch (error) {
+        console.error("Error Validasi Voucher:", error.message);
+        res.status(500).json({ 
+            success: false, 
+            message: "Terjadi kesalahan server", 
+            error: error.message 
+        });
     }
 };
 
