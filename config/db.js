@@ -2,7 +2,7 @@ const mysql = require('mysql2');
 require('dotenv').config();
 
 const pool = mysql.createPool({
-    host: process.env.DB_HOST || '31.97.220.59',
+    host: process.env.DB_HOST || 'hcg0g4k8coosokkkwg4go8wc',
     user: process.env.DB_USER || 'mysql',
     password: process.env.DB_PASS || 'HBUduUGKu7FfNtySo8BVr151PmyP5J5opS0J8UW9egKGkuTe4nQeoTLJadD1QXFm',
     database: process.env.DB_NAME || 'tangerang_mandiri',
