@@ -7,11 +7,15 @@ const { OAuth2Client } = require('google-auth-library');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'bad750e525b96e0efaf8bf2e4daa19515a2dcf76e047f0aa28bb35eebd767a08';
 
+// CLIENT ID HARDCODED
+const GOOGLE_CLIENT_ID_ADMIN = "206607018424-u9a7v54du628kt7mmnlcclsvq3og33ce.apps.googleusercontent.com";
+const GOOGLE_CLIENT_ID_CUSTOMER = "206607018424-vpr9bdfrk6oedfcvouf5i5e3lan7ckoh.apps.googleusercontent.com";
+
+const client = new OAuth2Client(GOOGLE_CLIENT_ID_ADMIN);
+
 const generateToken = (user) => {
     return jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
 };
-
-const client = new OAuth2Client("206607018424-u9a7v54du628kt7mmnlcclsvq3og33ce.apps.googleusercontent.com");
 
 exports.register = async (req, res) => {
     const { full_name, email, phone_number, password, role, fcm_token } = req.body;
@@ -138,15 +142,14 @@ exports.login = async (req, res) => {
         // LOGGING sebelum response dikirim
         console.log(`🔑 [Login Success] UID: ${user.id} | Email: ${user.email} | Phone: ${user.phone_number}`);
 
-        // 6. Response Lengkap (WAJIB sertakan email & phone_number untuk Profil)
         res.json({
             success: true,
             token,
             user: {
                 id: user.id,
                 full_name: user.full_name,
-                email: user.email,         // Ditambahkan kembali
-                phone_number: user.phone_number, // Ditambahkan kembali
+                email: user.email,
+                phone_number: user.phone_number,
                 role: user.role,
                 store_id: storeData ? storeData.id : null,
                 is_active: storeData ? storeData.is_active : (user.role === 'customer' ? 1 : 0)
@@ -162,16 +165,19 @@ exports.googleAuth = async (req, res) => {
     const { idToken, role, fcm_token, targetRole } = req.body;
 
     try {
-        // 1. Verifikasi ID Token langsung ke Google
+        // 1. Verifikasi ID Token dengan Array Audience (Support Admin & Customer)
         const ticket = await client.verifyIdToken({
             idToken: idToken,
-            audience: "206607018424-u9a7v54du628kt7mmnlcclsvq3og33ce.apps.googleusercontent.com",
+            audience: [
+                GOOGLE_CLIENT_ID_ADMIN,
+                GOOGLE_CLIENT_ID_CUSTOMER
+            ],
         });
         
         const payload = ticket.getPayload();
-        const { email, name } = payload; // Mengambil email dan nama dari Google
+        const { email, name } = payload;
 
-        // 2. Cek apakah user sudah ada di database MySQL Anda
+        // 2. Cek apakah user sudah ada
         const [rows] = await db.query("SELECT * FROM users WHERE email = ?", [email]);
         let user = rows[0];
 
@@ -181,7 +187,7 @@ exports.googleAuth = async (req, res) => {
 
             const [result] = await db.query(
                 "INSERT INTO users (full_name, email, phone_number, password, role, fcm_token) VALUES (?, ?, ?, ?, ?, ?)",
-                [name, email, null, 'GOOGLE_AUTH', role || 'admin', fcm_token || null]
+                [name, email, null, 'GOOGLE_AUTH', role || 'customer', fcm_token || null]
             );
 
             const userId = result.insertId;
@@ -201,7 +207,7 @@ exports.googleAuth = async (req, res) => {
         } else {
             // --- SKENARIO LOGIN VIA GOOGLE ---
 
-            // 4. VALIDASI ROLE
+            // 4. VALIDASI ROLE (Pagar agar admin tidak masuk ke app customer)
             if (targetRole && user.role !== targetRole) {
                 return res.status(403).json({
                     success: false,
@@ -239,7 +245,7 @@ exports.googleAuth = async (req, res) => {
 
     } catch (error) {
         console.error("❌ Google Auth Error:", error.message);
-        res.status(401).json({ success: false, message: "Token Google tidak valid" });
+        res.status(401).json({ success: false, message: "Token Google tidak valid atau aplikasi tidak terdaftar" });
     }
 };
 
@@ -266,7 +272,6 @@ exports.updateProfile = async (req, res) => {
     try {
         console.log(`\n[DEBUG] Updating User Profile for UID: ${user_id}`);
 
-        // 1. Cek apakah email atau phone baru sudah dipakai user lain
         const [existing] = await db.query(
             'SELECT id FROM users WHERE (email = ? OR phone_number = ?) AND id != ?',
             [email, phone_number, user_id]
@@ -279,7 +284,6 @@ exports.updateProfile = async (req, res) => {
             });
         }
 
-        // 2. Update data di tabel users
         const [result] = await db.query(
             'UPDATE users SET full_name = ?, email = ?, phone_number = ? WHERE id = ?',
             [full_name, email, phone_number, user_id]
