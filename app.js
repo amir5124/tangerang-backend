@@ -19,6 +19,7 @@ const userRoutes = require('./routes/userRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const assetRoutes = require('./routes/assetRoutes');
 const voucherRoutes = require('./routes/voucherRoutes');
+const settingsRoutes = require("./routes/settingsRoutes"); 
 
 const app = express();
 
@@ -75,6 +76,7 @@ app.use('/api/withdraw', withdrawRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/voucher', voucherRoutes);
+app.use("/api/settings", settingsRoutes);
 
 // --- 6. SERVER LISTENING ---
 const PORT = process.env.PORT || 3000;
