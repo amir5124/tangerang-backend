@@ -80,3 +80,28 @@ exports.validateVoucher = async (req, res) => {
         });
     }
 };
+
+// Get all vouchers
+exports.getVouchers = async (req, res) => {
+    try {
+        const [rows] = await db.execute("SELECT * FROM vouchers ORDER BY created_at DESC");
+        res.status(200).json({ success: true, data: rows });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
+
+// Update voucher status or data
+exports.updateVoucher = async (req, res) => {
+    const { id } = req.params;
+    const { is_active, expired_at, min_purchase } = req.body;
+    try {
+        await db.execute(
+            "UPDATE vouchers SET is_active = ?, expired_at = ?, min_purchase = ? WHERE id = ?",
+            [is_active, expired_at, min_purchase, id]
+        );
+        res.status(200).json({ success: true, message: "Voucher updated" });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
