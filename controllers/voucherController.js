@@ -12,7 +12,7 @@ exports.validateVoucher = async (req, res) => {
     }
 
     try {
-        // 1. Cari voucher yang aktif
+        // 1. Cari voucher yang aktif dan belum expired
         const [vouchers] = await db.execute(
             "SELECT * FROM vouchers WHERE code = ? AND is_active = 1 AND (expired_at > NOW() OR expired_at IS NULL)",
             [code]
@@ -27,7 +27,7 @@ exports.validateVoucher = async (req, res) => {
 
         const v = vouchers[0];
 
-        // 2. Cek apakah user (id) ini sudah pernah pakai voucher ini
+        // 2. CEK PENGGUNAAN (Agar 1 user hanya bisa pakai 1 kali)
         const [usageCheck] = await db.execute(
             "SELECT id FROM voucher_usages WHERE voucher_id = ? AND user_id = ?",
             [v.id, user_id]
@@ -40,26 +40,36 @@ exports.validateVoucher = async (req, res) => {
             });
         }
 
-        // 3. Cek Minimal Belanja (Opsional tapi disarankan)
-        if (v.min_purchase && subtotal_layanan < v.min_purchase) {
+        // 3. Cek Minimal Belanja
+        const subtotal = parseFloat(subtotal_layanan || 0);
+        const minPurchase = parseFloat(v.min_purchase || 0);
+
+        if (subtotal < minPurchase) {
             return res.status(400).json({
                 success: false,
-                message: `Minimal belanja untuk voucher ini adalah Rp${parseInt(v.min_purchase).toLocaleString('id-ID')}`
+                message: `Minimal belanja untuk voucher ini adalah Rp${parseInt(minPurchase).toLocaleString('id-ID')}`
             });
         }
 
-        // 4. Hitung besaran diskon
-        let discountAmount = 0;
-        if (v.discount_type === 'percent') {
-            discountAmount = Math.floor(subtotal_layanan * (v.discount_percent / 100));
-            // Batasi jika ada maksimal diskon
-            if (v.max_discount_amount && discountAmount > v.max_discount_amount) {
-                discountAmount = parseFloat(v.max_discount_amount);
+        // 4. Hitung besaran diskon (Khusus Tipe Percent)
+        // Rumus: Subtotal * (Persen / 100)
+        let discountAmount = Math.floor(subtotal * (v.discount_percent / 100));
+
+        // 5. Batasi dengan Maksimal Potongan (Jika ada di database)
+        if (v.max_discount_amount && v.max_discount_amount > 0) {
+            const maxLimit = parseFloat(v.max_discount_amount);
+            if (discountAmount > maxLimit) {
+                discountAmount = maxLimit;
             }
-        } else {
-            // Jika tipe diskon adalah nominal tetap (fixed)
-            discountAmount = parseFloat(v.discount_fixed_amount || 0);
         }
+
+        // --- BAGIAN KRUSIAL: CATAT KE TABEL USAGES ---
+        // Dengan menjalankan query ini, maka pada pengecekan berikutnya (langkah 2), 
+        // user akan ditolak karena data sudah ada di database.
+        await db.execute(
+            "INSERT INTO voucher_usages (voucher_id, user_id, used_at) VALUES (?, ?, NOW())",
+            [v.id, user_id]
+        );
 
         res.status(200).json({
             success: true,
@@ -67,7 +77,8 @@ exports.validateVoucher = async (req, res) => {
             data: {
                 voucher_id: v.id,
                 code: v.code,
-                discount_amount: discountAmount
+                discount_amount: discountAmount,
+                final_subtotal: subtotal - discountAmount
             }
         });
 
