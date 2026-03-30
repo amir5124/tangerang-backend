@@ -92,16 +92,35 @@ exports.getVouchers = async (req, res) => {
 };
 
 // Update voucher status or data
+// controllers/voucherController.js
 exports.updateVoucher = async (req, res) => {
     const { id } = req.params;
-    const { is_active, expired_at, min_purchase } = req.body;
+    const { is_active, expired_at, min_purchase, code, max_discount_amount } = req.body;
+
     try {
+        // Ambil data yang ada saat ini
+        const [rows] = await db.execute("SELECT * FROM vouchers WHERE id = ?", [id]);
+        if (rows.length === 0) return res.status(404).json({ success: false, message: "Voucher tidak ditemukan" });
+        
+        const oldData = rows[0];
+
+        // Gabungkan data lama dengan data baru (jika baru undefined, pakai yang lama)
+        const updateData = {
+            code: code !== undefined ? code : oldData.code,
+            is_active: is_active !== undefined ? is_active : oldData.is_active,
+            expired_at: expired_at !== undefined ? expired_at : oldData.expired_at,
+            min_purchase: min_purchase !== undefined ? min_purchase : oldData.min_purchase,
+            max_discount_amount: max_discount_amount !== undefined ? max_discount_amount : oldData.max_discount_amount
+        };
+
         await db.execute(
-            "UPDATE vouchers SET is_active = ?, expired_at = ?, min_purchase = ? WHERE id = ?",
-            [is_active, expired_at, min_purchase, id]
+            "UPDATE vouchers SET code = ?, is_active = ?, expired_at = ?, min_purchase = ?, max_discount_amount = ? WHERE id = ?",
+            [updateData.code, updateData.is_active, updateData.expired_at, updateData.min_purchase, updateData.max_discount_amount, id]
         );
-        res.status(200).json({ success: true, message: "Voucher updated" });
+
+        res.status(200).json({ success: true, message: "Voucher berhasil diperbarui" });
     } catch (error) {
+        console.error("Update Error:", error.message);
         res.status(500).json({ success: false, error: error.message });
     }
 };
