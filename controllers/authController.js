@@ -75,9 +75,10 @@ exports.register = async (req, res) => {
                     });
                 }
             }
-        } catch (fcmErr) {
-            console.error("⚠️ FCM Admin (Register) Error:", fcmErr.message);
-        }
+      } catch (fcmErr) {
+    // Tambahkan detail log untuk melihat alasan teknis dari Firebase
+    console.error("⚠️ FCM Admin (Register) Error Detail:", fcmErr); 
+}
         // --- END TAMBAHAN ---
 
         console.log(`✨ [Register Success] User: ${email}, Role: ${role}`);
@@ -164,8 +165,15 @@ exports.login = async (req, res) => {
 exports.googleAuth = async (req, res) => {
     const { idToken, role, fcm_token, targetRole } = req.body;
 
+    // DEBUG: Cek input dari frontend
+    console.log("🔍 [DEBUG GOOGLE] Incoming Request:", { 
+        targetRole, 
+        providedRole: role, 
+        hasFcmToken: !!fcm_token 
+    });
+
     try {
-        // 1. Verifikasi ID Token dengan Array Audience (Support Admin & Customer)
+        // 1. Verifikasi ID Token
         const ticket = await client.verifyIdToken({
             idToken: idToken,
             audience: [
@@ -176,6 +184,8 @@ exports.googleAuth = async (req, res) => {
         
         const payload = ticket.getPayload();
         const { email, name } = payload;
+        
+        console.log(`🔍 [DEBUG GOOGLE] Token Verified. Email: ${email}, Name: ${name}`);
 
         // 2. Cek apakah user sudah ada
         const [rows] = await db.query("SELECT * FROM users WHERE email = ?", [email]);
@@ -183,7 +193,7 @@ exports.googleAuth = async (req, res) => {
 
         if (!user) {
             // --- SKENARIO REGISTER VIA GOOGLE ---
-            console.log(`🆕 [Google Register] Creating new user: ${email}`);
+            console.log(`🆕 [DEBUG GOOGLE] User ${email} tidak ditemukan. Memulai proses REGISTER.`);
 
             const [result] = await db.query(
                 "INSERT INTO users (full_name, email, phone_number, password, role, fcm_token) VALUES (?, ?, ?, ?, ?, ?)",
@@ -191,9 +201,11 @@ exports.googleAuth = async (req, res) => {
             );
 
             const userId = result.insertId;
+            console.log(`✅ [DEBUG GOOGLE] User baru berhasil dibuat. UID: ${userId}`);
 
             // 3. Inisialisasi tambahan jika mitra
             if (role === 'mitra') {
+                console.log(`🏪 [DEBUG GOOGLE] Inisialisasi toko untuk mitra UID: ${userId}`);
                 await db.query(
                     `INSERT INTO stores (user_id, store_name, category, address, latitude, longitude, approval_status, is_active) 
                      VALUES (?, ?, ?, ?, 0, 0, 'pending', 0)`,
@@ -206,9 +218,12 @@ exports.googleAuth = async (req, res) => {
             user = newUser[0];
         } else {
             // --- SKENARIO LOGIN VIA GOOGLE ---
+            console.log(`🔑 [DEBUG GOOGLE] User ${email} ditemukan. Memulai proses LOGIN.`);
 
-            // 4. VALIDASI ROLE (Pagar agar admin tidak masuk ke app customer)
+            // 4. VALIDASI ROLE
+            console.log(`⚖️ [DEBUG GOOGLE] Checking Role: DB_Role(${user.role}) vs Target_Role(${targetRole})`);
             if (targetRole && user.role !== targetRole) {
+                console.warn(`🚫 [DEBUG GOOGLE] Role Mismatch for ${email}. Access Blocked.`);
                 return res.status(403).json({
                     success: false,
                     message: `Akses Ditolak. Akun Google ini terdaftar sebagai ${user.role}.`
@@ -217,6 +232,7 @@ exports.googleAuth = async (req, res) => {
 
             // 5. Update FCM Token
             if (fcm_token) {
+                console.log(`📱 [DEBUG GOOGLE] Updating FCM Token for UID: ${user.id}`);
                 await db.query("UPDATE users SET fcm_token = ? WHERE id = ?", [fcm_token, user.id]);
             }
         }
@@ -226,9 +242,13 @@ exports.googleAuth = async (req, res) => {
         if (user.role === 'mitra') {
             const [stores] = await db.query('SELECT id FROM stores WHERE user_id = ?', [user.id]);
             storeId = stores[0]?.id || null;
+            console.log(`🏪 [DEBUG GOOGLE] Store ID ditemukan: ${storeId}`);
         }
 
         const token = generateToken(user);
+
+        // DEBUG Final Response
+        console.log(`🚀 [DEBUG GOOGLE] Login Success. Sending response for UID: ${user.id}`);
 
         res.status(200).json({
             success: true,
@@ -244,8 +264,12 @@ exports.googleAuth = async (req, res) => {
         });
 
     } catch (error) {
-        console.error("❌ Google Auth Error:", error.message);
-        res.status(401).json({ success: false, message: "Token Google tidak valid atau aplikasi tidak terdaftar" });
+        console.error("❌ [DEBUG GOOGLE] FATAL ERROR:", error.message);
+        res.status(401).json({ 
+            success: false, 
+            message: "Token Google tidak valid atau aplikasi tidak terdaftar",
+            error: error.message 
+        });
     }
 };
 
