@@ -2,16 +2,23 @@ const express = require('express');
 const router = express.Router();
 const authController = require('../controllers/authController');
 const { authenticateToken } = require('../middlewares/authMiddleware');
+const rateLimit = require('express-rate-limit');
 
-// --- PUBLIC ROUTES ---
+const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, 
+    max: 5, 
+    message: {
+        success: false,
+        message: "Terlalu banyak percobaan login. Silakan coba lagi setelah 15 menit."
+    },
+    standardHeaders: true, 
+    legacyHeaders: false, 
+});
+
 router.post('/register', authController.register);
-router.post('/login', authController.login);
+router.post('/login', loginLimiter, authController.login);
+router.post('/google', loginLimiter, authController.googleAuth);
 
-// Tambahkan rute Google Auth di sini
-router.post('/google', authController.googleAuth);
-
-// --- PROTECTED ROUTES (Perlu Login) ---
-// Gunakan authenticateToken agar user_id diambil dari token, bukan kiriman body yang bisa dimanipulasi
 router.post('/logout', authenticateToken, authController.logout);
 router.put('/update-profile', authenticateToken, authController.updateProfile);
 

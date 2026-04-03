@@ -105,57 +105,49 @@ exports.register = async (req, res) => {
 
 exports.login = async (req, res) => {
     const { email, password, fcm_token, targetRole } = req.body;
+    const genericError = "Email atau Password salah";
 
     try {
         // 1. Cari user
         const [users] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
+        
+        // Jangan beri tahu hacker kalau emailnya benar tapi password salah
         if (users.length === 0) {
-            console.log(`🔍 [Login Failed] Email tidak terdaftar: ${email}`);
-            return res.status(404).json({ success: false, message: "Email tidak terdaftar" });
+            return res.status(401).json({ success: false, message: genericError });
         }
 
         const user = users[0];
 
-        // 2. VALIDASI ROLE (Pagar utama aplikasi)
+        // 2. Verifikasi Password (Proses berat)
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) {
+            return res.status(401).json({ success: false, message: genericError });
+        }
+
+        // 3. VALIDASI ROLE
         if (targetRole && user.role !== targetRole) {
-            console.warn(`🚫 [Role Mismatch] UID ${user.id} (${user.role}) mencoba akses sebagai ${targetRole}`);
+            console.warn(`🚫 [Role Mismatch] UID ${user.id} mencoba masuk sebagai ${targetRole}`);
             return res.status(403).json({
                 success: false,
                 message: `Akses Ditolak. Akun Anda terdaftar sebagai ${user.role}.`
             });
         }
 
-        // 3. Verifikasi Password
-        const isMatch = await bcrypt.compare(password, user.password);
-        if (!isMatch) {
-            console.log(`🔑 [Login Failed] Password salah untuk UID: ${user.id}`);
-            return res.status(401).json({ success: false, message: "Password salah" });
-        }
-
-        // 4. Update FCM Token (Logika Diperketat)
-        // Kita hanya update jika fcm_token ada isinya (bukan null, bukan empty string, bukan string 'null')
-        if (fcm_token && fcm_token !== 'null' && fcm_token.trim() !== '') {
+        // 4. Update FCM Token (Hanya jika berubah)
+        const isValidFCM = fcm_token && fcm_token !== 'null' && fcm_token.trim() !== '';
+        if (isValidFCM && fcm_token !== user.fcm_token) {
             await db.query('UPDATE users SET fcm_token = ? WHERE id = ?', [fcm_token, user.id]);
-            console.log(`📱 [FCM Updated] UID: ${user.id} | Token Baru: ${fcm_token.substring(0, 15)}...`);
-        } else {
-            // Jika frontend kirim null atau kosong, kita TIDAK mengupdate DB agar token lama tidak hilang
-            console.log(`ℹ️ [FCM Skip] UID: ${user.id} | Frontend mengirim token kosong/null. Token DB dipertahankan.`);
+            console.log(`📱 [FCM Updated] UID: ${user.id}`);
         }
 
-        // 5. Ambil data Toko jika mitra
+        // 5. Ambil data Toko (Jika Mitra)
         let storeData = null;
         if (user.role === 'mitra') {
-            const [stores] = await db.query('SELECT * FROM stores WHERE user_id = ?', [user.id]);
+            const [stores] = await db.query('SELECT id, is_active FROM stores WHERE user_id = ?', [user.id]);
             storeData = stores[0] || null;
-            if (storeData) {
-                console.log(`🏪 [Store Found] UID: ${user.id} | Store ID: ${storeData.id}`);
-            }
         }
 
         const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
-
-        // LOGGING FINAL
-        console.log(`✅ [Login Success] UID: ${user.id} | Email: ${user.email} | Role: ${user.role}`);
 
         res.json({
             success: true,
@@ -164,7 +156,6 @@ exports.login = async (req, res) => {
                 id: user.id,
                 full_name: user.full_name,
                 email: user.email,
-                phone_number: user.phone_number,
                 role: user.role,
                 store_id: storeData ? storeData.id : null,
                 is_active: storeData ? storeData.is_active : (user.role === 'customer' ? 1 : 0)
@@ -172,10 +163,12 @@ exports.login = async (req, res) => {
         });
 
     } catch (error) {
-        console.error("❌ [Login Fatal Error]:", error.stack); // Menggunakan error.stack agar log lebih lengkap
-        res.status(500).json({ success: false, error: "Terjadi kesalahan internal pada server" });
+        console.error("❌ [Login Fatal Error]:", error.message);
+        res.status(500).json({ success: false, message: "Terjadi kesalahan internal" });
     }
 };
+
+
 exports.googleAuth = async (req, res) => {
     const { idToken, role, fcm_token, targetRole } = req.body;
 

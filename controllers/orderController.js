@@ -7,18 +7,18 @@ const { sendPushNotification } = require('../services/notificationService');
  * UPDATE: Sekarang mendukung otomatis membuat wallet jika belum ada (Upsert)
  */
 const releaseFundsToMitra = async (connection, orderId) => {
-    // 1. CEK EKSTRIM: Pastikan belum pernah dicairkan
+    console.log(`[DEBUG] === Memulai Proses Pencairan Dana Order #${orderId} ===`);
+    
     const [existingTx] = await connection.execute(
         "SELECT id FROM wallet_transactions WHERE description LIKE ?",
         [`%Order #${orderId}%`]
     );
 
     if (existingTx.length > 0) {
-        console.log(`[PREVENT] Order #${orderId} sudah pernah dicairkan.`);
+        console.warn(`[DEBUG] [PREVENT] Order #${orderId} sudah pernah dicairkan sebelumnya.`);
         return false;
     }
 
-    // 2. Ambil detail biaya (Termasuk discount_amount)
     const [order] = await connection.execute(
         `SELECT o.total_price, o.discount_amount, s.user_id as mitra_user_id 
          FROM orders o 
@@ -26,38 +26,41 @@ const releaseFundsToMitra = async (connection, orderId) => {
          WHERE o.id = ?`, [orderId]
     );
 
-    if (order.length === 0) return false;
+    if (order.length === 0) {
+        console.error(`[DEBUG] [ERROR] Order #${orderId} tidak ditemukan.`);
+        return false;
+    }
+    
     const { total_price, discount_amount, mitra_user_id } = order[0];
 
-    // LOGIKA VOUCHER:
-    // paidByCustomer = Harga yang dibayar user (sudah dipotong diskon di createOrder)
-    // discount = Nilai voucher
     const paidByCustomer = parseFloat(total_price) || 0;
-    const discount = parseFloat(discount_amount) || 0;
-    
-    // grossOriginal = Harga asli sebelum diskon (untuk dasar bagi hasil Mitra)
-    const grossOriginal = paidByCustomer + discount;
+    const discountVal = parseFloat(discount_amount) || 0;
+    const grossOriginal = paidByCustomer + discountVal;
 
-    // Mitra tetap dapat 70% dari harga asli (tidak rugi karena voucher)
     const netAmount = Math.floor(grossOriginal * 0.7);
-    
-    // Komisi App adalah sisa dari uang yang masuk dikurangi jatah mitra
-    // (Otomatis berkurang karena paidByCustomer lebih kecil dari biasanya)
     const platformFeeAmount = paidByCustomer - netAmount;
 
-    // 3. Update Saldo (Upsert)
+    console.log(`[DEBUG] Perhitungan Bagi Hasil:
+    - Paid by Customer : Rp${paidByCustomer.toLocaleString()}
+    - Discount Used    : Rp${discountVal.toLocaleString()}
+    - Gross Original   : Rp${grossOriginal.toLocaleString()}
+    - Net to Mitra (70%): Rp${netAmount.toLocaleString()}
+    - Final Platform Fee: Rp${platformFeeAmount.toLocaleString()}`);
+
     const [walletCheck] = await connection.execute(
         "SELECT id FROM wallets WHERE user_id = ?", [mitra_user_id]
     );
 
     let walletId;
     if (walletCheck.length === 0) {
+        console.log(`[DEBUG] Wallet tidak ditemukan. Membuat wallet baru untuk UID: ${mitra_user_id}`);
         const [insertWallet] = await connection.execute(
             "INSERT INTO wallets (user_id, balance) VALUES (?, ?)",
             [mitra_user_id, netAmount]
         );
         walletId = insertWallet.insertId;
     } else {
+        console.log(`[DEBUG] Update saldo wallet ID: ${walletCheck[0].id}`);
         await connection.execute(
             "UPDATE wallets SET balance = balance + ? WHERE user_id = ?",
             [netAmount, mitra_user_id]
@@ -65,10 +68,9 @@ const releaseFundsToMitra = async (connection, orderId) => {
         walletId = walletCheck[0].id;
     }
 
-    // 4. Catat history & Update platform_fee final
     await connection.execute(
         "INSERT INTO wallet_transactions (wallet_id, amount, type, description) VALUES (?, ?, 'credit', ?)",
-        [walletId, netAmount, `Penghasilan Order #${orderId} (Bagi hasil 70% dari harga normal)`]
+        [walletId, netAmount, `Penghasilan Order #${orderId} (70% dari Rp${grossOriginal.toLocaleString()})`]
     );
 
     await connection.execute(
@@ -76,29 +78,24 @@ const releaseFundsToMitra = async (connection, orderId) => {
         [platformFeeAmount, orderId]
     );
 
+    console.log(`[DEBUG] === Pencairan Dana Selesai untuk Order #${orderId} ===`);
     return netAmount;
 };
 
 exports.createOrder = async (req, res) => {
     const {
-        customer_id,
-        store_id,
-        metode_pembayaran,
-        jenisGedung,
-        jadwal,
-        lokasi,
-        rincian_biaya,
-        layananTerpilih,
-        catatan,
-        voucher_code // Input baru dari frontend
+        customer_id, store_id, metode_pembayaran, jenisGedung,
+        jadwal, lokasi, rincian_biaya, layananTerpilih, catatan, voucher_code
     } = req.body;
+
+    console.log(`[DEBUG] === Incoming Request: Create Order ===`);
+    console.log(`[DEBUG] Customer: ${customer_id}, Store: ${store_id}, Voucher: ${voucher_code || 'None'}`);
 
     const connection = await db.getConnection();
 
     try {
         await connection.beginTransaction();
 
-        // --- LOGIKA VOUCHER START ---
         let discountAmount = 0;
         let appliedVoucherId = null;
 
@@ -110,8 +107,6 @@ exports.createOrder = async (req, res) => {
 
             if (vouchers.length > 0) {
                 const v = vouchers[0];
-                
-                // Cek apakah user sudah pernah pakai voucher ini
                 const [usageCheck] = await connection.execute(
                     "SELECT id FROM voucher_usages WHERE voucher_id = ? AND user_id = ?",
                     [v.id, customer_id]
@@ -119,22 +114,23 @@ exports.createOrder = async (req, res) => {
 
                 if (usageCheck.length === 0) {
                     appliedVoucherId = v.id;
-                    // Hitung diskon berdasarkan subtotal layanan
                     discountAmount = Math.floor(rincian_biaya.subtotal_layanan * (v.discount_percent / 100));
                     
-                    // Cek limit maksimal diskon jika ada
                     if (v.max_discount_amount && discountAmount > v.max_discount_amount) {
                         discountAmount = v.max_discount_amount;
                     }
+                    console.log(`[DEBUG] Voucher Applied: ${v.code}, Amount: Rp${discountAmount}`);
+                } else {
+                    console.warn(`[DEBUG] Voucher ${v.code} sudah pernah digunakan oleh user ${customer_id}`);
                 }
+            } else {
+                console.warn(`[DEBUG] Voucher ${voucher_code} tidak valid atau expired`);
             }
         }
         
-        // Harga final yang harus dibayar customer
         const finalTotalPrice = rincian_biaya.total_akhir - discountAmount;
-        // --- LOGIKA VOUCHER END ---
+        console.log(`[DEBUG] Total Akhir: Rp${finalTotalPrice} (Original: Rp${rincian_biaya.total_akhir})`);
 
-        // 1. INSERT KE TABEL ORDERS
         const sqlOrder = `INSERT INTO orders 
             (customer_id, store_id, scheduled_date, scheduled_time, building_type, 
              address_customer, lat_customer, lng_customer, total_price, 
@@ -142,26 +138,15 @@ exports.createOrder = async (req, res) => {
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?, ?, ?)`;
 
         const [orderResult] = await connection.execute(sqlOrder, [
-            customer_id,
-            store_id,
-            jadwal.tanggal,
-            jadwal.waktu,
-            jenisGedung,
-            lokasi.alamatLengkap,
-            lokasi.latitude,
-            lokasi.longitude,
-            finalTotalPrice, // Total yang sudah dipotong diskon
-            rincian_biaya.biaya_layanan_app, // platform_fee sementara
-            rincian_biaya.biaya_transaksi,
-            catatan || null,
-            JSON.stringify(layananTerpilih),
-            appliedVoucherId,
-            discountAmount
+            customer_id, store_id, jadwal.tanggal, jadwal.waktu, jenisGedung,
+            lokasi.alamatLengkap, lokasi.latitude, lokasi.longitude, finalTotalPrice,
+            rincian_biaya.biaya_layanan_app, rincian_biaya.biaya_transaksi,
+            catatan || null, JSON.stringify(layananTerpilih), appliedVoucherId, discountAmount
         ]);
 
         const newOrderId = orderResult.insertId;
+        console.log(`[DEBUG] Success Insert Order ID: ${newOrderId}`);
 
-        // 2. Catat penggunaan voucher jika valid
         if (appliedVoucherId) {
             await connection.execute(
                 "INSERT INTO voucher_usages (voucher_id, user_id, order_id) VALUES (?, ?, ?)",
@@ -169,7 +154,6 @@ exports.createOrder = async (req, res) => {
             );
         }
 
-        // 3. INSERT KE TABEL ORDER_ITEMS
         const sqlItem = `INSERT INTO order_items (order_id, service_name, qty, price_satuan, subtotal) VALUES (?, ?, ?, ?, ?)`;
         for (const item of layananTerpilih) {
             await connection.execute(sqlItem, [
@@ -177,93 +161,30 @@ exports.createOrder = async (req, res) => {
             ]);
         }
 
-        // 4. INSERT KE TABEL PAYMENTS
-        const sqlPayment = `INSERT INTO payments 
-            (order_id, customer_id, payment_method, gross_amount, payment_status) 
-            VALUES (?, ?, ?, ?, 'pending')`;
+        await connection.execute(
+            "INSERT INTO payments (order_id, customer_id, payment_method, gross_amount, payment_status) VALUES (?, ?, ?, ?, 'pending')",
+            [newOrderId, customer_id, metode_pembayaran, finalTotalPrice]
+        );
 
-        await connection.execute(sqlPayment, [
-            newOrderId, customer_id, metode_pembayaran, finalTotalPrice
-        ]);
-
-        // 5. LOG STATUS AWAL
         await connection.execute(
             "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'unpaid', 'Pesanan dibuat')",
             [newOrderId]
         );
 
         await connection.commit();
+        console.log(`[DEBUG] === Transaction Committed: Order #${newOrderId} ===`);
         res.status(201).json({ success: true, message: "Pesanan berhasil dibuat", order_id: newOrderId });
 
     } catch (error) {
         if (connection) await connection.rollback();
-        console.error("❌ Error createOrder:", error.message);
+        console.error("❌ [DEBUG] [FATAL ERROR] createOrder:", error.stack);
         res.status(500).json({ success: false, message: "Gagal membuat pesanan", error: error.message });
     } finally {
         if (connection) connection.release();
     }
 };
 
-exports.validateVoucher = async (req, res) => {
-    // Kita gunakan user_id (merujuk ke users.id)
-    const { code, user_id, subtotal_layanan } = req.body;
 
-    try {
-        // 1. Cari voucher yang aktif
-        const [vouchers] = await db.execute(
-            "SELECT * FROM vouchers WHERE code = ? AND is_active = 1 AND expired_at > NOW()",
-            [code]
-        );
-
-        if (vouchers.length === 0) {
-            return res.status(404).json({ 
-                success: false, 
-                message: "Kode voucher tidak ditemukan atau sudah kedaluwarsa." 
-            });
-        }
-
-        const v = vouchers[0];
-
-        // 2. Cek apakah user (id) ini sudah pernah pakai voucher ini
-        const [usageCheck] = await db.execute(
-            "SELECT id FROM voucher_usages WHERE voucher_id = ? AND user_id = ?",
-            [v.id, user_id]
-        );
-
-        if (usageCheck.length > 0) {
-            return res.status(400).json({ 
-                success: false, 
-                message: "Voucher ini sudah pernah Anda gunakan sebelumnya." 
-            });
-        }
-
-        // 3. Hitung besaran diskon
-        let discountAmount = Math.floor(subtotal_layanan * (v.discount_percent / 100));
-        
-        // Batasi jika ada maksimal diskon
-        if (v.max_discount_amount && discountAmount > v.max_discount_amount) {
-            discountAmount = parseFloat(v.max_discount_amount);
-        }
-
-        res.status(200).json({
-            success: true,
-            message: "Voucher berhasil diterapkan!",
-            data: {
-                voucher_id: v.id,
-                code: v.code,
-                discount_amount: discountAmount
-            }
-        });
-
-    } catch (error) {
-        console.error("Error Validasi Voucher:", error.message);
-        res.status(500).json({ 
-            success: false, 
-            message: "Terjadi kesalahan server", 
-            error: error.message 
-        });
-    }
-};
 
 exports.getOrderDetail = async (req, res) => {
     const { id } = req.params;
