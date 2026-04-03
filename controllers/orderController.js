@@ -89,8 +89,6 @@ exports.createOrder = async (req, res) => {
     } = req.body;
 
     console.log(`[DEBUG] === Incoming Request: Create Order ===`);
-    console.log(`[DEBUG] Customer: ${customer_id}, Store: ${store_id}, Voucher: ${voucher_code || 'None'}`);
-
     const connection = await db.getConnection();
 
     try {
@@ -100,37 +98,44 @@ exports.createOrder = async (req, res) => {
         let appliedVoucherId = null;
 
         if (voucher_code) {
+            // 1. Ambil data voucher termasuk usage_limit
             const [vouchers] = await connection.execute(
-                "SELECT * FROM vouchers WHERE code = ? AND is_active = 1 AND expired_at > NOW()",
+                "SELECT * FROM vouchers WHERE code = ? AND is_active = 1 AND (expired_at > NOW() OR expired_at IS NULL)",
                 [voucher_code]
             );
 
             if (vouchers.length > 0) {
                 const v = vouchers[0];
-                const [usageCheck] = await connection.execute(
-                    "SELECT id FROM voucher_usages WHERE voucher_id = ? AND user_id = ?",
+                
+                // 2. Hitung jumlah penggunaan oleh user ini
+                const [usageResult] = await connection.execute(
+                    "SELECT COUNT(*) as total_usage FROM voucher_usages WHERE voucher_id = ? AND user_id = ?",
                     [v.id, customer_id]
                 );
 
-                if (usageCheck.length === 0) {
+                const currentUsage = usageResult[0].total_usage;
+                const limit = v.usage_limit || 1; // Fallback ke 1 jika null
+
+                // 3. Perubahan Logika: Cek apakah masih di bawah limit
+                if (currentUsage < limit) {
                     appliedVoucherId = v.id;
                     discountAmount = Math.floor(rincian_biaya.subtotal_layanan * (v.discount_percent / 100));
                     
                     if (v.max_discount_amount && discountAmount > v.max_discount_amount) {
-                        discountAmount = v.max_discount_amount;
+                        discountAmount = parseFloat(v.max_discount_amount);
                     }
-                    console.log(`[DEBUG] Voucher Applied: ${v.code}, Amount: Rp${discountAmount}`);
+                    console.log(`[DEBUG] Voucher Applied: ${v.code} (Usage: ${currentUsage + 1}/${limit}), Amount: Rp${discountAmount}`);
                 } else {
-                    console.warn(`[DEBUG] Voucher ${v.code} sudah pernah digunakan oleh user ${customer_id}`);
+                    console.warn(`[DEBUG] Voucher ${v.code} mencapai limit untuk user ${customer_id} (${currentUsage}/${limit})`);
                 }
             } else {
-                console.warn(`[DEBUG] Voucher ${voucher_code} tidak valid atau expired`);
+                console.warn(`[DEBUG] Voucher ${voucher_code} tidak valid/aktif/expired`);
             }
         }
         
         const finalTotalPrice = rincian_biaya.total_akhir - discountAmount;
-        console.log(`[DEBUG] Total Akhir: Rp${finalTotalPrice} (Original: Rp${rincian_biaya.total_akhir})`);
 
+        // 4. Simpan Order
         const sqlOrder = `INSERT INTO orders 
             (customer_id, store_id, scheduled_date, scheduled_time, building_type, 
              address_customer, lat_customer, lng_customer, total_price, 
@@ -145,8 +150,8 @@ exports.createOrder = async (req, res) => {
         ]);
 
         const newOrderId = orderResult.insertId;
-        console.log(`[DEBUG] Success Insert Order ID: ${newOrderId}`);
 
+        // 5. Catat penggunaan voucher ke history
         if (appliedVoucherId) {
             await connection.execute(
                 "INSERT INTO voucher_usages (voucher_id, user_id, order_id) VALUES (?, ?, ?)",
@@ -154,11 +159,10 @@ exports.createOrder = async (req, res) => {
             );
         }
 
+        // 6. Simpan item & log pembayaran (sama seperti kode sebelumnya)
         const sqlItem = `INSERT INTO order_items (order_id, service_name, qty, price_satuan, subtotal) VALUES (?, ?, ?, ?, ?)`;
         for (const item of layananTerpilih) {
-            await connection.execute(sqlItem, [
-                newOrderId, item.nama, item.qty, item.hargaSatuan, (item.qty * item.hargaSatuan)
-            ]);
+            await connection.execute(sqlItem, [newOrderId, item.nama, item.qty, item.hargaSatuan, (item.qty * item.hargaSatuan)]);
         }
 
         await connection.execute(
@@ -172,18 +176,16 @@ exports.createOrder = async (req, res) => {
         );
 
         await connection.commit();
-        console.log(`[DEBUG] === Transaction Committed: Order #${newOrderId} ===`);
         res.status(201).json({ success: true, message: "Pesanan berhasil dibuat", order_id: newOrderId });
 
     } catch (error) {
         if (connection) await connection.rollback();
-        console.error("❌ [DEBUG] [FATAL ERROR] createOrder:", error.stack);
+        console.error("❌ [DEBUG] createOrder Error:", error.stack);
         res.status(500).json({ success: false, message: "Gagal membuat pesanan", error: error.message });
     } finally {
         if (connection) connection.release();
     }
 };
-
 
 
 exports.getOrderDetail = async (req, res) => {
