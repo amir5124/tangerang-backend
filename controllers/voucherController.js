@@ -115,3 +115,12 @@ exports.updateVoucher = async (req, res) => {
         res.status(500).json({ success: false, error: error.message });
     }
 };
+
+exports.getVouchers = async (req, res) => {
+    try {
+        const [rows] = await db.execute("SELECT * FROM vouchers ORDER BY created_at DESC");
+        res.status(200).json({ success: true, data: rows });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
