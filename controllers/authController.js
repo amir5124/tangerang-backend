@@ -336,7 +336,7 @@ exports.updateProfile = async (req, res) => {
     }
 };
 
-export const changePassword = async (req, res) => {
+exports.changePassword = async (req, res) => {
     const { user_id, old_password, new_password } = req.body;
 
     try {

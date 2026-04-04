@@ -21,6 +21,6 @@ router.post('/google', loginLimiter, authController.googleAuth);
 router.get('/profile', authenticateToken, authController.getProfile);
 router.post('/logout', authenticateToken, authController.logout);
 router.put('/update-profile', authenticateToken, authController.updateProfile);
-router.put('/change-password', changePassword);
+router.put('/change-password', authenticateToken, authController.changePassword);
 
 module.exports = router;
