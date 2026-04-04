@@ -336,6 +336,35 @@ exports.updateProfile = async (req, res) => {
     }
 };
 
+export const changePassword = async (req, res) => {
+    const { user_id, old_password, new_password } = req.body;
+
+    try {
+        // 1. Cari user di database
+        const [rows] = await db.query('SELECT password FROM users WHERE id = ?', [user_id]);
+        if (rows.length === 0) return res.status(404).json({ success: false, message: "User tidak ditemukan" });
+
+        const user = rows[0];
+
+        // 2. Validasi password lama
+        const isMatch = await bcrypt.compare(old_password, user.password);
+        if (!isMatch) {
+            return res.status(400).json({ success: false, message: "Password lama salah" });
+        }
+
+        // 3. Hash password baru
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(new_password, salt);
+
+        // 4. Update ke database
+        await db.query('UPDATE users SET password = ? WHERE id = ?', [hashedPassword, user_id]);
+
+        res.json({ success: true, message: "Password berhasil diperbarui" });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
 exports.getProfile = async (req, res) => {
     const userId = req.user.id;
 
