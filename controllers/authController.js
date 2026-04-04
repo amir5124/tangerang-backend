@@ -75,10 +75,10 @@ exports.register = async (req, res) => {
                     });
                 }
             }
-      } catch (fcmErr) {
-    // Tambahkan detail log untuk melihat alasan teknis dari Firebase
-    console.error("⚠️ FCM Admin (Register) Error Detail:", fcmErr); 
-}
+        } catch (fcmErr) {
+            // Tambahkan detail log untuk melihat alasan teknis dari Firebase
+            console.error("⚠️ FCM Admin (Register) Error Detail:", fcmErr);
+        }
         // --- END TAMBAHAN ---
 
         console.log(`✨ [Register Success] User: ${email}, Role: ${role}`);
@@ -110,7 +110,7 @@ exports.login = async (req, res) => {
     try {
         // 1. Cari user
         const [users] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
-        
+
         // Jangan beri tahu hacker kalau emailnya benar tapi password salah
         if (users.length === 0) {
             return res.status(401).json({ success: false, message: genericError });
@@ -173,10 +173,10 @@ exports.googleAuth = async (req, res) => {
     const { idToken, role, fcm_token, targetRole } = req.body;
 
     // DEBUG: Cek input dari frontend
-    console.log("🔍 [DEBUG GOOGLE] Incoming Request:", { 
-        targetRole, 
-        providedRole: role, 
-        hasFcmToken: !!fcm_token 
+    console.log("🔍 [DEBUG GOOGLE] Incoming Request:", {
+        targetRole,
+        providedRole: role,
+        hasFcmToken: !!fcm_token
     });
 
     try {
@@ -188,10 +188,10 @@ exports.googleAuth = async (req, res) => {
                 GOOGLE_CLIENT_ID_CUSTOMER
             ],
         });
-        
+
         const payload = ticket.getPayload();
         const { email, name } = payload;
-        
+
         console.log(`🔍 [DEBUG GOOGLE] Token Verified. Email: ${email}, Name: ${name}`);
 
         // 2. Cek apakah user sudah ada
@@ -272,10 +272,10 @@ exports.googleAuth = async (req, res) => {
 
     } catch (error) {
         console.error("❌ [DEBUG GOOGLE] FATAL ERROR:", error.message);
-        res.status(401).json({ 
-            success: false, 
+        res.status(401).json({
+            success: false,
             message: "Token Google tidak valid atau aplikasi tidak terdaftar",
-            error: error.message 
+            error: error.message
         });
     }
 };
@@ -327,15 +327,55 @@ exports.updateProfile = async (req, res) => {
         res.json({
             success: true,
             message: "Profil personal berhasil diperbarui",
-            user: {
-                full_name,
-                email,
-                phone_number
-            }
+            user: { full_name, email, phone_number }
         });
 
     } catch (error) {
         console.error("❌ Update Profile Error:", error.message);
+        res.status(500).json({ success: false, message: "Terjadi kesalahan server" });
+    }
+};
+
+exports.getProfile = async (req, res) => {
+    const userId = req.user.id;
+
+    try {
+        console.log(`\n🔍 [DEBUG] Fetching Profile for UID: ${userId}`);
+
+        const [rows] = await db.query(
+            `SELECT u.id, u.full_name, u.email, u.phone_number, u.role, u.fcm_token, 
+             s.id AS store_id, s.is_active 
+             FROM users u 
+             LEFT JOIN stores s ON u.id = s.user_id 
+             WHERE u.id = ?`,
+            [userId]
+        );
+
+        if (rows.length === 0) {
+            console.error(`❌ [DEBUG] User not found for UID: ${userId}`);
+            return res.status(404).json({ success: false, message: "User tidak ditemukan" });
+        }
+
+        const user = rows[0];
+        
+        console.log(`✅ [DEBUG] Profile data retrieved for: ${user.email}`);
+
+        res.json({
+            success: true,
+            user: {
+                id: user.id,
+                full_name: user.full_name,
+                email: user.email,
+                phone_number: user.phone_number,
+                role: user.role,
+                fcm_token: user.fcm_token,
+                store_id: user.store_id,
+                is_active: user.role === 'customer' ? 1 : (user.is_active || 0)
+            }
+        });
+
+    } catch (error) {
+        console.error("❌ [DEBUG] Get Profile Error:", error.message);
         res.status(500).json({ success: false, message: "Terjadi kesalahan server" });
     }
 };
