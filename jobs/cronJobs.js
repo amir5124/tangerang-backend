@@ -11,12 +11,13 @@ cron.schedule('*/10 * * * *', async () => {
         /**
          * TASK 1: AUTO-CANCEL EXPIRED PAYMENTS (QRIS/VA)
          * Menangani order yang tidak dibayar sampai batas waktu expired_at
+         * Menggunakan DATE_ADD 7 jam karena waktu server MySQL menggunakan UTC
          */
         const [expiredPayments] = await connection.execute(`
             SELECT p.order_id, p.transaction_id 
             FROM payments p 
             WHERE p.payment_status = 'pending' 
-            AND p.expired_at <= NOW()
+            AND p.expired_at <= DATE_ADD(NOW(), INTERVAL 7 HOUR)
         `);
 
         for (const pay of expiredPayments) {
@@ -45,12 +46,13 @@ cron.schedule('*/10 * * * *', async () => {
         /**
          * TASK 2: AUTO-COMPLETE & RELEASE FUNDS
          * Menangani order yang sudah dikerjakan tapi tidak dikonfirmasi pelanggan > 24 jam
+         * Ditambah INTERVAL 7 jam agar pembanding updated_at akurat dengan WIB
          */
         const [expiredOrders] = await connection.execute(`
             SELECT id FROM orders 
             WHERE status = 'working' 
             AND proof_image_url IS NOT NULL
-            AND updated_at <= NOW() - INTERVAL 24 HOUR
+            AND updated_at <= DATE_ADD(NOW(), INTERVAL 7 HOUR) - INTERVAL 24 HOUR
         `);
 
         for (const order of expiredOrders) {
