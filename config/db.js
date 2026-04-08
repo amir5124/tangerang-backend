@@ -1,0 +1,27 @@
+const mysql = require('mysql2');
+require('dotenv').config();
+
+const pool = mysql.createPool({
+    host: process.env.DB_HOST || 'hcg0g4k8coosokkkwg4go8wc',
+    user: process.env.DB_USER || 'mysql',
+    password: process.env.DB_PASS || 'HBUduUGKu7FfNtySo8BVr151PmyP5J5opS0J8UW9egKGkuTe4nQeoTLJadD1QXFm',
+    database: process.env.DB_NAME || 'tangerang_mandiri',
+    port: 3306,
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+    timezone: '+07:00',
+    dateStrings: true,
+});
+
+// Cek koneksi saat server nyala
+pool.getConnection((err, connection) => {
+    if (err) {
+        console.error("❌ [DB] Koneksi Gagal:", err.message);
+    } else {
+        console.log("✅ [DB] Terhubung menggunakan:", process.env.DB_HOST ? "Environment Variable" : "Hardcoded IP");
+        connection.release();
+    }
+});
+
+module.exports = pool.promise();
