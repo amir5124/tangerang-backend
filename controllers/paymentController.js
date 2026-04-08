@@ -253,49 +253,60 @@ exports.checkPaymentStatus = async (req, res) => {
     const connection = await db.getConnection();
 
     try {
-        // 1. Cek status di Database Lokal dulu (karena Webhook sering lebih cepat)
         const [rows] = await connection.execute(
-            `SELECT p.payment_status, o.id AS order_id FROM payments p 
+            `SELECT p.payment_status, p.expired_at, o.id AS order_id 
+             FROM payments p 
              JOIN orders o ON p.order_id = o.id 
              WHERE p.transaction_id = ?`,
             [partnerReff]
         );
 
-        // Jika di DB sudah sukses (oleh webhook), langsung kembalikan SUCCESS
-        if (rows.length > 0 && (rows[0].payment_status === 'settlement' || rows[0].payment_status === 'SUCCESS')) {
-            return res.json({
-                success: true,
-                status: 'SUCCESS',
-                message: "Status updated via Webhook"
-            });
+        if (rows.length === 0) {
+            console.error(`[CHECK_PAYMENT] Not Found: ${partnerReff}`);
+            return res.status(404).json({ success: false, message: "Transaksi tidak ditemukan" });
         }
 
-        // 2. Jika di DB masih pending, baru tanya ke LinkQu
-        const linkquResult = await linkqu.checkStatus(partnerReff);
+        const { payment_status, expired_at, order_id } = rows[0];
 
-        // Ambil status secara aman dari berbagai kemungkinan layer objek LinkQu
+        if (payment_status === 'settlement' || payment_status === 'SUCCESS') {
+            return res.json({ success: true, status: 'SUCCESS' });
+        }
+
+        if (payment_status === 'pending' && new Date() > new Date(expired_at)) {
+            console.log(`[CHECK_PAYMENT] Auto-Expired: ${partnerReff}`);
+            await connection.beginTransaction();
+            await connection.execute("UPDATE payments SET payment_status = 'expire' WHERE transaction_id = ?", [partnerReff]);
+            await connection.execute("UPDATE orders SET status = 'cancelled' WHERE id = ?", [order_id]);
+            await connection.execute("INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'cancelled', 'Expired otomatis saat pengecekan status')", [order_id]);
+            await connection.commit();
+            return res.json({ success: true, status: 'EXPIRED' });
+        }
+
+        const linkquResult = await linkqu.checkStatus(partnerReff);
         const status = linkquResult?.status || linkquResult?.data?.status || linkquResult?.response_desc;
 
-        console.log(`🔍 Polling Status LinkQu [${partnerReff}]:`, status);
+        console.log(`[CHECK_PAYMENT] LinkQu Status [${partnerReff}]: ${status}`);
 
-        // Jika LinkQu bilang sukses tapi DB belum (kasus polling manual)
         if (status === 'SUCCESS' || status === 'SETTLED') {
             await connection.beginTransaction();
-            // ... (Kode update database Anda tetap sama seperti sebelumnya) ...
-            // Pastikan lakukan commit jika update berhasil
+            await connection.execute("UPDATE payments SET payment_status = 'settlement', transaction_time = NOW() WHERE transaction_id = ?", [partnerReff]);
+            await connection.execute("UPDATE orders SET status = 'pending' WHERE id = ?", [order_id]);
+            await connection.execute("INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'pending', 'Pembayaran sukses terverifikasi')", [order_id]);
             await connection.commit();
+
+            return res.json({ success: true, status: 'SUCCESS' });
         }
 
         res.json({
             success: true,
-            status: (status === 'SUCCESS' || status === 'SETTLED') ? 'SUCCESS' : 'PENDING',
+            status: payment_status.toUpperCase(),
             data: linkquResult
         });
 
     } catch (err) {
         if (connection) await connection.rollback();
-        console.error("❌ Polling Error:", err.message);
-        res.status(500).json({ success: false, message: err.message });
+        console.error(`[CHECK_PAYMENT] Error [${partnerReff}]:`, err.message);
+        res.status(500).json({ success: false, message: "Internal Server Error" });
     } finally {
         connection.release();
     }
