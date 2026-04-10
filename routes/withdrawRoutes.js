@@ -2,11 +2,11 @@ const express = require("express");
 const router = express.Router();
 const withdrawController = require("../controllers/withdrawController");
 
-// Step 1: Inquiry (Cek data & biaya)
 router.post("/inquiry", withdrawController.inquiryWithdraw);
 
-// Step 2: Payment (Eksekusi tarik saldo & potong wallet)
 router.post("/execute", withdrawController.executeWithdraw);
 router.post("/callback", withdrawController.handleWithdrawCallback);
+router.get("/history/:user_id", withdrawController.getHistoryByUser);
+router.get("/admin/all-history", withdrawController.getAllHistory);
 
 module.exports = router;

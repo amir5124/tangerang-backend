@@ -1,12 +1,12 @@
 const db = require('../config/db');
 const axios = require("axios");
-const { 
-    LINKQU_CONFIG, 
-    E_WALLET_CODES, 
-    VA_CODES, 
-    generateSignature, 
-    logToFile, 
-    BANK_MAPPING 
+const {
+    LINKQU_CONFIG,
+    E_WALLET_CODES,
+    VA_CODES,
+    generateSignature,
+    logToFile,
+    BANK_MAPPING
 } = require("../utils/linkquHelper");
 
 // 1. INQUIRY WITHDRAW
@@ -26,7 +26,7 @@ exports.inquiryWithdraw = async (req, res) => {
         // 1. Cek Saldo Internal di DB
         console.log(`🔍 Mencari wallet untuk user_id: ${user_id}`);
         const [wallet] = await db.query("SELECT balance FROM wallets WHERE user_id = ?", [user_id]);
-        
+
         if (!wallet.length) {
             console.log("❌ [ERROR] Wallet tidak ditemukan di database untuk user ini");
             return res.status(404).json({ success: false, message: "Wallet tidak ditemukan" });
@@ -77,9 +77,9 @@ exports.inquiryWithdraw = async (req, res) => {
             signature
         };
 
-        const headers = { 
-            "client-id": LINKQU_CONFIG.clientId, 
-            "client-secret": LINKQU_CONFIG.clientSecret 
+        const headers = {
+            "client-id": LINKQU_CONFIG.clientId,
+            "client-secret": LINKQU_CONFIG.clientSecret
         };
 
         // 3. Request ke API LinkQu
@@ -106,7 +106,7 @@ exports.inquiryWithdraw = async (req, res) => {
         console.log("💥 [FATAL ERROR] Inquiry Gagal");
         const errorData = error.response?.data || error.message;
         console.log("Detail Error:", JSON.stringify(errorData, null, 2));
-        
+
         logToFile("Inquiry Error", errorData);
         res.status(500).json({ success: false, message: "Gagal Inquiry", error: errorData });
     }
@@ -120,7 +120,7 @@ exports.executeWithdraw = async (req, res) => {
 
     try {
         const [inqData] = await db.query("SELECT * FROM inquiries WHERE inquiry_reff = ? AND user_id = ?", [inquiry_reff, user_id]);
-        
+
         if (!inqData.length) {
             console.log("❌ [ERROR] Data inquiry tidak ditemukan di database");
             return res.status(404).json({ success: false, message: "Data inquiry tidak ditemukan" });
@@ -211,7 +211,7 @@ exports.handleWithdrawCallback = async (req, res) => {
 
                 // Default ke 0 jika tidak ditemukan di database, lalu konversi ke angka
                 const withdrawFee = adminConfig.length > 0 ? parseInt(adminConfig[0].key_value) : 0;
-                
+
                 // 3. HITUNG TOTAL YANG HARUS DIPOTONG (Nominal Withdraw + Biaya Admin)
                 const totalDebit = parseFloat(transfer.amount) + withdrawFee;
 
@@ -256,5 +256,34 @@ exports.handleWithdrawCallback = async (req, res) => {
         res.status(500).send("Internal Error");
     } finally {
         if (connection) connection.release();
+    }
+};
+
+exports.getHistoryByUser = async (req, res) => {
+    const { user_id } = req.params;
+    try {
+        const [rows] = await db.query(
+            'SELECT * FROM transfers WHERE user_id = ? ORDER BY created_at DESC',
+            [user_id]
+        );
+        res.json({ success: true, data: rows });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// 5. GET ALL HISTORY (Untuk Admin)
+exports.getAllHistory = async (req, res) => {
+    try {
+        const query = `
+            SELECT t.*, u.name as user_name, u.email 
+            FROM transfers t
+            JOIN users u ON t.user_id = u.id
+            ORDER BY t.created_at DESC
+        `;
+        const [rows] = await db.query(query);
+        res.json({ success: true, data: rows });
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
     }
 };

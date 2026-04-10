@@ -67,15 +67,15 @@ cron.schedule('* * * * *', async () => {
         }
 
         /**
-         * TASK 3: AUTO-REFUND (NO PARTNER RESPONSE - 5 MINS)
+         * TASK 3: AUTO-REFUND (NO PARTNER RESPONSE - 10 MINS)
          * Menggunakan tabel wallets & wallet_transactions sebagai sumber data keuangan.
          */
         const [noResponseOrders] = await connection.execute(`
-            SELECT id, customer_id, total_price 
-            FROM orders 
-            WHERE status = 'pending' 
-            AND updated_at <= DATE_ADD(NOW(), INTERVAL 7 HOUR) - INTERVAL 5 MINUTE
-        `);
+    SELECT id, customer_id, total_price 
+    FROM orders 
+    WHERE status = 'pending' 
+    AND updated_at <= DATE_ADD(NOW(), INTERVAL 7 HOUR) - INTERVAL 10 MINUTE 
+`);
 
         if (noResponseOrders.length > 0) {
             console.log(`[TASK 3] Found ${noResponseOrders.length} orders for refund.`);
@@ -109,8 +109,8 @@ cron.schedule('* * * * *', async () => {
                         INSERT INTO wallet_transactions (wallet_id, amount, type, description) 
                         VALUES (?, ?, 'credit', ?)`,
                         [
-                            walletId, 
-                            order.total_price, 
+                            walletId,
+                            order.total_price,
                             `Refund otomatis Order #${order.id} (Mitra tidak merespon)`
                         ]
                     );
