@@ -293,7 +293,9 @@ exports.getRefundHistory = async (req, res) => {
                 u.full_name as customer_name, 
                 p.gross_amount as nominal_refund, 
                 p.transaction_time as tanggal_refund,
-                o.status as order_status
+                o.status as order_status,
+                o.platform_fee,
+                o.service_fee
             FROM payments p
             JOIN orders o ON p.order_id = o.id
             JOIN users u ON o.customer_id = u.id
@@ -309,11 +311,10 @@ exports.getRefundHistory = async (req, res) => {
             data: rows 
         });
     } catch (error) {
-        // Log ini penting untuk melihat jika ada error typo lagi
         console.error("Error Get Refund History:", error.message); 
         res.status(500).json({ 
             success: false, 
-            error: error.message // Menampilkan error asli agar mudah debug
+            error: error.message 
         });
     }
 };
