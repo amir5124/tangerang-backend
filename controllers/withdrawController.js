@@ -278,10 +278,18 @@ exports.getAllHistory = async (req, res) => {
         const query = `
             SELECT 
                 t.*, 
-                u.full_name as full_name,  -- Ganti u.name jadi u.full_name
-                u.email 
+                u.full_name, 
+                u.email,
+                wt.description as wallet_description,
+                wt.type as transaction_type,
+                wt.amount as transaction_amount
             FROM transfers t
             JOIN users u ON t.user_id = u.id
+            -- Gabungkan ke wallets untuk mendapatkan wallet_id
+            LEFT JOIN wallets w ON u.id = w.user_id
+            -- Gabungkan ke wallet_transactions berdasarkan kecocokan partner_reff di deskripsi
+            LEFT JOIN wallet_transactions wt ON wt.wallet_id = w.id 
+                AND wt.description LIKE CONCAT('%', t.partner_reff, '%')
             ORDER BY t.created_at DESC
         `;
         const [rows] = await db.query(query);
