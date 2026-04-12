@@ -18,5 +18,6 @@ router.get('/user/:userId', orderController.getUserOrders);
 router.post('/:id/update-status', upload.single('image'), orderController.updateOrderStatus);
 router.post('/:id/complete-customer', orderController.customerCompleteOrder);
 router.get('/admin/all', orderController.getAllOrdersAdmin);
+router.get('/admin/refund-history', orderController.getRefundHistory);
 
 module.exports = router;

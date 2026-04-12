@@ -283,6 +283,40 @@ exports.getAllOrdersAdmin = async (req, res) => {
     }
 };
 
+// Di dalam orderController.js
+
+exports.getRefundHistory = async (req, res) => {
+    try {
+        const sql = `
+            SELECT 
+                p.order_id, 
+                u.full_name as customer_name, 
+                p.amount as nominal_refund, 
+                p.updated_at as tanggal_refund,
+                o.status as order_status
+            FROM payments p
+            JOIN orders o ON p.order_id = o.id
+            JOIN users u ON o.customer_id = u.id
+            WHERE p.payment_status = 'refund'
+            ORDER BY p.updated_at DESC
+        `;
+            
+        const [rows] = await db.execute(sql);
+        
+        res.status(200).json({ 
+            success: true, 
+            message: "Berhasil mengambil riwayat refund",
+            data: rows 
+        });
+    } catch (error) {
+        console.error("Error Get Refund History:", error.message);
+        res.status(500).json({ 
+            success: false, 
+            error: "Gagal mengambil data refund" 
+        });
+    }
+};
+
 exports.updateOrderStatus = async (req, res) => {
     const { id } = req.params;
     const { status } = req.body; // Status yang dikirim dari aplikasi Mitra
