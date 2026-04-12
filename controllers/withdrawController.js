@@ -276,7 +276,10 @@ exports.getHistoryByUser = async (req, res) => {
 exports.getAllHistory = async (req, res) => {
     try {
         const query = `
-            SELECT t.*, u.name as user_name, u.email 
+            SELECT 
+                t.*, 
+                u.full_name as full_name,  -- Ganti u.name jadi u.full_name
+                u.email 
             FROM transfers t
             JOIN users u ON t.user_id = u.id
             ORDER BY t.created_at DESC
