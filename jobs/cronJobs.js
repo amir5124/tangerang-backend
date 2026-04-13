@@ -89,7 +89,7 @@ cron.schedule('*/5 * * * *', async () => {
                 try {
                     // Lock row untuk mencegah race condition (Anti-Double Refund)
                     const [check] = await connection.execute(
-                        "SELECT payment_status FROM payments WHERE order_id = ? FOR UPDATE", 
+                        "SELECT payment_status FROM payments WHERE order_id = ? FOR UPDATE",
                         [order.id]
                     );
 
@@ -136,5 +136,59 @@ cron.schedule('*/5 * * * *', async () => {
         console.error('--- [CRON GLOBAL ERROR] ---', error);
     } finally {
         connection.release();
+    }
+
+    /**
+         * TASK 4: AUTO-PENALTY (MITRA ABAIKAN/CANCEL MANUAL)
+         * Jika mitra klik 'Abaikan', potong service_fee dari saldo mitra sebagai penalti
+         * karena biaya admin PG sudah terlanjur dibayarkan saat settlement.
+         */
+    const [penaltyOrders] = await connection.execute(`
+            SELECT o.id, o.service_fee, s.user_id AS mitra_user_id, s.store_name
+            FROM orders o
+            JOIN stores s ON o.store_id = s.id
+            WHERE o.status = 'cancelled' 
+            AND o.service_fee > 0
+            AND EXISTS (
+                SELECT 1 FROM order_status_logs 
+                WHERE order_id = o.id 
+                AND notes LIKE '%oleh mitra%' 
+                AND notes NOT LIKE '%Penalty Applied%'
+            )
+        `);
+
+    if (penaltyOrders.length > 0) {
+        if (expiredPayments.length === 0 && expiredWork.length === 0 && noResponseOrders.length === 0) {
+            console.log(`\n--- [CRON START: ${timestamp}] ---`);
+        }
+        console.log(`[TASK 4] Found ${penaltyOrders.length} orders for PG Admin penalty (service_fee).`);
+
+        for (const order of penaltyOrders) {
+            await connection.beginTransaction();
+            try {
+                const penaltyAmount = parseFloat(order.service_fee);
+
+                // 1. Potong Saldo Mitra di tabel users sebesar service_fee
+                await connection.execute(
+                    "UPDATE users SET saldo = saldo - ? WHERE id = ?",
+                    [penaltyAmount, order.mitra_user_id]
+                );
+
+                // 2. Tambah catatan di order_status_logs agar tidak diproses berulang (Idempotency)
+                await connection.execute(
+                    "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'cancelled', ?)",
+                    [order.id, `Penalty Applied: Rp${penaltyAmount.toLocaleString('id-ID')} (Service Fee PG) deducted from mitra balance.`]
+                );
+
+                // 3. Log ke konsol untuk debugging
+                console.log(`[DEBUG] Order #${order.id}: Mitra ${order.mitra_user_id} dipotong Rp${penaltyAmount} (service_fee).`);
+
+                await connection.commit();
+                console.log(`   ✅ Order #${order.id}: Penalty Dibebankan ke Mitra ${order.store_name}.`);
+            } catch (err) {
+                await connection.rollback();
+                console.error(`   ❌ Error Task 4 #${order.id}:`, err.message);
+            }
+        }
     }
 });
