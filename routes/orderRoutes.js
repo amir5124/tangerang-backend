@@ -13,6 +13,7 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage: storage });
 router.post('/create', orderController.createOrder);
+router.post('/cancel', orderController.cancelOrder);
 router.get('/detail/:id', orderController.getOrderDetail);
 router.get('/user/:userId', orderController.getUserOrders);
 router.post('/:id/update-status', upload.single('image'), orderController.updateOrderStatus);

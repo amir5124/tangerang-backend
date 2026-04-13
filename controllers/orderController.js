@@ -268,6 +268,28 @@ exports.getUserOrders = async (req, res) => {
     }
 };
 
+exports.cancelOrder = async (req, res) => {
+    const { orderId, reason } = req.body;
+    try {
+        const sql = `
+            UPDATE orders 
+            SET status = 'cancelled', 
+                cancelled_by = 'customer',
+                cancel_reason = ? 
+            WHERE id = ? AND status IN ('pending', 'unpaid')
+        `;
+        const [result] = await db.execute(sql, [reason, orderId]);
+        
+        if (result.affectedRows > 0) {
+            res.json({ success: true, message: 'Pesanan berhasil dibatalkan' });
+        } else {
+            res.status(400).json({ success: false, message: 'Pesanan tidak dapat dibatalkan' });
+        }
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
+
 exports.getAllOrdersAdmin = async (req, res) => {
     try {
         const sql = `
