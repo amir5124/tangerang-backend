@@ -2,7 +2,6 @@ const cron = require('node-cron');
 const db = require('../config/db');
 const { internalReleaseFunds } = require('../controllers/orderController');
 
-
 cron.schedule('*/5 * * * *', async () => {
     const timestamp = new Date().toLocaleString('id-ID');
     const connection = await db.getConnection();
@@ -10,7 +9,6 @@ cron.schedule('*/5 * * * *', async () => {
     try {
         /**
          * TASK 1: AUTO-CANCEL EXPIRED PAYMENTS
-         * Menangani QRIS (30m) dan VA (24h) secara otomatis berdasarkan kolom expired_at
          */
         const [expiredPayments] = await connection.execute(`
             SELECT p.order_id, p.transaction_id 
@@ -38,7 +36,7 @@ cron.schedule('*/5 * * * *', async () => {
         }
 
         /**
-         * TASK 2: AUTO-COMPLETE (CONFIRMATION TIMEOUT 24H)
+         * TASK 2: AUTO-COMPLETE
          */
         const [expiredWork] = await connection.execute(`
             SELECT id FROM orders 
@@ -65,10 +63,7 @@ cron.schedule('*/5 * * * *', async () => {
         }
 
         /**
-         * TASK 3: AUTO-REFUND (NO PARTNER RESPONSE - 1 HOUR)
-         * - Menunggu 1 jam sesuai permintaan.
-         * - Refund = total_price + platform_fee.
-         * - Proteksi anti-double refund dengan cek payment_status != 'refund'.
+         * TASK 3: AUTO-REFUND
          */
         const [noResponseOrders] = await connection.execute(`
             SELECT o.id, o.customer_id, o.total_price, o.platform_fee 
@@ -84,47 +79,24 @@ cron.schedule('*/5 * * * *', async () => {
             console.log(`[TASK 3] Found ${noResponseOrders.length} orders for refund.`);
             for (const order of noResponseOrders) {
                 const totalRefund = parseFloat(order.total_price) + parseFloat(order.platform_fee || 0);
-
                 await connection.beginTransaction();
                 try {
-                    // Lock row untuk mencegah race condition (Anti-Double Refund)
-                    const [check] = await connection.execute(
-                        "SELECT payment_status FROM payments WHERE order_id = ? FOR UPDATE",
-                        [order.id]
-                    );
-
+                    const [check] = await connection.execute("SELECT payment_status FROM payments WHERE order_id = ? FOR UPDATE", [order.id]);
                     if (!check[0] || check[0].payment_status === 'refund') {
                         await connection.rollback();
                         continue;
                     }
-
                     const [wallets] = await connection.execute("SELECT id FROM wallets WHERE user_id = ?", [order.customer_id]);
                     if (wallets.length === 0) throw new Error(`Wallet not found for user ${order.customer_id}`);
 
                     const walletId = wallets[0].id;
-
-                    // Update Status (Agar tidak masuk loop lagi)
                     await connection.execute("UPDATE orders SET status = 'cancelled' WHERE id = ?", [order.id]);
                     await connection.execute("UPDATE payments SET payment_status = 'refund' WHERE order_id = ?", [order.id]);
-
-                    // Saldo Masuk (Full + Fee)
                     await connection.execute("UPDATE wallets SET balance = balance + ? WHERE id = ?", [totalRefund, walletId]);
-
-                    // Riwayat Transaksi
-                    await connection.execute(`
-                        INSERT INTO wallet_transactions (wallet_id, amount, type, description) 
-                        VALUES (?, ?, 'credit', ?)`,
-                        [walletId, totalRefund, `Refund otomatis Order #${order.id} (Mitra tidak merespon 1 jam)`]
-                    );
-
-                    // Log Order
-                    await connection.execute(
-                        "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'cancelled', ?)",
-                        [order.id, `Refund otomatis Rp${totalRefund.toLocaleString('id-ID')} (termasuk biaya layanan) dikirim ke wallet.`]
-                    );
-
+                    await connection.execute("INSERT INTO wallet_transactions (wallet_id, amount, type, description) VALUES (?, ?, 'credit', ?)", [walletId, totalRefund, `Refund otomatis Order #${order.id}`]);
+                    await connection.execute("INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'cancelled', ?)", [order.id, `Refund otomatis Rp${totalRefund.toLocaleString('id-ID')}`]);
                     await connection.commit();
-                    console.log(`   ✅ Order #${order.id}: Refunded Rp${totalRefund} to Wallet ID ${walletId}.`);
+                    console.log(`   ✅ Order #${order.id}: Refunded Rp${totalRefund}.`);
                 } catch (err) {
                     await connection.rollback();
                     console.error(`   ❌ Error Task 3 #${order.id}:`, err.message);
@@ -132,18 +104,10 @@ cron.schedule('*/5 * * * *', async () => {
             }
         }
 
-    } catch (error) {
-        console.error('--- [CRON GLOBAL ERROR] ---', error);
-    } finally {
-        connection.release();
-    }
-
-    /**
-         * TASK 4: AUTO-PENALTY (MITRA ABAIKAN/CANCEL MANUAL)
-         * Jika mitra klik 'Abaikan', potong service_fee dari saldo mitra sebagai penalti
-         * karena biaya admin PG sudah terlanjur dibayarkan saat settlement.
+        /**
+         * TASK 4: AUTO-PENALTY (DIPINDAHKAN KE DALAM TRY)
          */
-    const [penaltyOrders] = await connection.execute(`
+        const [penaltyOrders] = await connection.execute(`
             SELECT o.id, o.service_fee, s.user_id AS mitra_user_id, s.store_name
             FROM orders o
             JOIN stores s ON o.store_id = s.id
@@ -157,38 +121,32 @@ cron.schedule('*/5 * * * *', async () => {
             )
         `);
 
-    if (penaltyOrders.length > 0) {
-        if (expiredPayments.length === 0 && expiredWork.length === 0 && noResponseOrders.length === 0) {
-            console.log(`\n--- [CRON START: ${timestamp}] ---`);
-        }
-        console.log(`[TASK 4] Found ${penaltyOrders.length} orders for PG Admin penalty (service_fee).`);
+        if (penaltyOrders.length > 0) {
+            // Cek variabel dari Task sebelumnya untuk header log
+            if (expiredPayments.length === 0 && expiredWork.length === 0 && noResponseOrders.length === 0) {
+                console.log(`\n--- [CRON START: ${timestamp}] ---`);
+            }
+            console.log(`[TASK 4] Found ${penaltyOrders.length} orders for PG Admin penalty.`);
 
-        for (const order of penaltyOrders) {
-            await connection.beginTransaction();
-            try {
-                const penaltyAmount = parseFloat(order.service_fee);
-
-                // 1. Potong Saldo Mitra di tabel users sebesar service_fee
-                await connection.execute(
-                    "UPDATE users SET saldo = saldo - ? WHERE id = ?",
-                    [penaltyAmount, order.mitra_user_id]
-                );
-
-                // 2. Tambah catatan di order_status_logs agar tidak diproses berulang (Idempotency)
-                await connection.execute(
-                    "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'cancelled', ?)",
-                    [order.id, `Penalty Applied: Rp${penaltyAmount.toLocaleString('id-ID')} (Service Fee PG) deducted from mitra balance.`]
-                );
-
-                // 3. Log ke konsol untuk debugging
-                console.log(`[DEBUG] Order #${order.id}: Mitra ${order.mitra_user_id} dipotong Rp${penaltyAmount} (service_fee).`);
-
-                await connection.commit();
-                console.log(`   ✅ Order #${order.id}: Penalty Dibebankan ke Mitra ${order.store_name}.`);
-            } catch (err) {
-                await connection.rollback();
-                console.error(`   ❌ Error Task 4 #${order.id}:`, err.message);
+            for (const order of penaltyOrders) {
+                await connection.beginTransaction();
+                try {
+                    const penaltyAmount = parseFloat(order.service_fee);
+                    await connection.execute("UPDATE users SET saldo = saldo - ? WHERE id = ?", [penaltyAmount, order.mitra_user_id]);
+                    await connection.execute("INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'cancelled', ?)", [order.id, `Penalty Applied: Rp${penaltyAmount.toLocaleString('id-ID')} (Service Fee PG)`]);
+                    await connection.commit();
+                    console.log(`   ✅ Order #${order.id}: Penalty Applied to ${order.store_name}.`);
+                } catch (err) {
+                    await connection.rollback();
+                    console.error(`   ❌ Error Task 4 #${order.id}:`, err.message);
+                }
             }
         }
+
+    } catch (error) {
+        console.error('--- [CRON GLOBAL ERROR] ---', error);
+    } finally {
+        // Dilepas sekali di akhir setelah semua Task selesai
+        connection.release();
     }
 });
