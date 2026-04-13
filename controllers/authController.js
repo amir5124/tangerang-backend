@@ -5,7 +5,9 @@ const jwt = require('jsonwebtoken');
 const { sendPushNotification } = require('../services/notificationService');
 const { OAuth2Client } = require('google-auth-library');
 const { sendResetPasswordEmail } = require('../utils/mailer');
-const crypto = require('crypto')
+const crypto = require('crypto');
+const upload = require('../middlewares/uploadMiddleware');
+const multer = require('multer');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'bad750e525b96e0efaf8bf2e4daa19515a2dcf76e047f0aa28bb35eebd767a08';
 
@@ -268,65 +270,85 @@ exports.logout = async (req, res) => {
 };
 
 exports.updateProfile = async (req, res) => {
-    console.log("\n========== DEBUG UPDATE PROFILE ==========");
-    console.log("[PAYLOAD BODY]:", req.body);
-    console.log("[PAYLOAD FILE]:", req.file ? req.file.filename : "TIDAK ADA FILE");
+    // 1. Panggil middleware multer secara manual agar kita bisa menangkap error-nya
+    const uploadSingle = upload.single('profile_picture');
 
-    const { user_id, full_name, email, phone_number } = req.body;
+    uploadSingle(req, res, async (err) => {
+        console.log("\n========== DEBUG UPDATE PROFILE ==========");
 
-    try {
-        if (!user_id) {
-            return res.status(400).json({ success: false, message: "User ID wajib ada" });
-        }
-
-        // 1. Ambil data lama dari database terlebih dahulu
-        const [currentUser] = await db.query('SELECT profile_picture FROM users WHERE id = ?', [user_id]);
-        if (currentUser.length === 0) {
-            return res.status(404).json({ success: false, message: "User tidak ditemukan" });
-        }
-
-        let final_profile_picture = currentUser[0].profile_picture;
-
-        // 2. Jika ada file baru, gunakan yang baru
-        if (req.file) {
-            final_profile_picture = `/uploads/profiles/${req.file.filename}`;
-            console.log(`[SUCCESS] Menggunakan foto baru: ${final_profile_picture}`);
-        } 
-        // 3. Jika tidak ada file baru, tapi frontend mengirim path (mungkin path lama), 
-        // kita tetap gunakan data dari DB (langkah 1) agar aman.
-
-        // 4. Cek duplikasi email/phone
-        const [existing] = await db.query(
-            'SELECT id FROM users WHERE (email = ? OR phone_number = ?) AND id != ?',
-            [email, phone_number, user_id]
-        );
-
-        if (existing.length > 0) {
-            return res.status(400).json({ success: false, message: "Email/No HP sudah dipakai orang lain" });
-        }
-
-        // 5. Update Database
-        await db.query(
-            'UPDATE users SET full_name = ?, email = ?, phone_number = ?, profile_picture = ? WHERE id = ?',
-            [full_name, email, phone_number, final_profile_picture, user_id]
-        );
-
-        res.json({
-            success: true,
-            message: "Profil diperbarui",
-            user: { 
-                id: user_id, 
-                full_name, 
-                email, 
-                phone_number, 
-                profile_picture: final_profile_picture 
+        // --- PENANGANAN ERROR MULTER (Termasuk File Too Large) ---
+        if (err instanceof multer.MulterError) {
+            console.error("❌ Multer Error:", err.code);
+            if (err.code === 'LIMIT_FILE_SIZE') {
+                return res.status(400).json({
+                    success: false,
+                    message: "File terlalu besar! Maksimal adalah 5MB."
+                });
             }
-        });
+            return res.status(400).json({ success: false, message: err.message });
+        } else if (err) {
+            // Error dari fileFilter (format tidak sesuai)
+            console.error("❌ Filter Error:", err.message);
+            return res.status(400).json({ success: false, message: err.message });
+        }
 
-    } catch (error) {
-        console.error("❌ Error:", error.message);
-        res.status(500).json({ success: false, message: "Server error" });
-    }
+        // --- LANJUT KE LOGIKA UPDATE PROFIL ---
+        const { user_id, full_name, email, phone_number } = req.body;
+
+        try {
+            if (!user_id) {
+                return res.status(400).json({ success: false, message: "User ID wajib ada" });
+            }
+
+            // Ambil data lama
+            const [currentUser] = await db.query('SELECT profile_picture FROM users WHERE id = ?', [user_id]);
+            if (currentUser.length === 0) {
+                return res.status(404).json({ success: false, message: "User tidak ditemukan" });
+            }
+
+            let final_profile_picture = currentUser[0].profile_picture;
+
+            // Jika ada file baru yang lolos seleksi multer
+            if (req.file) {
+                final_profile_picture = `/uploads/profiles/${req.file.filename}`;
+                console.log(`[SUCCESS] File baru diterima: ${req.file.filename}`);
+            }
+
+            // Cek duplikasi email/phone (kecuali milik user ini sendiri)
+            const [existing] = await db.query(
+                'SELECT id FROM users WHERE (email = ? OR phone_number = ?) AND id != ?',
+                [email, phone_number, user_id]
+            );
+
+            if (existing.length > 0) {
+                return res.status(400).json({ success: false, message: "Email atau No HP sudah digunakan" });
+            }
+
+            // Update Database
+            await db.query(
+                'UPDATE users SET full_name = ?, email = ?, phone_number = ?, profile_picture = ? WHERE id = ?',
+                [full_name, email, phone_number, final_profile_picture, user_id]
+            );
+
+            console.log("[SUCCESS] Database updated untuk User ID:", user_id);
+
+            res.json({
+                success: true,
+                message: "Profil berhasil diperbarui",
+                user: {
+                    id: user_id,
+                    full_name,
+                    email,
+                    phone_number,
+                    profile_picture: final_profile_picture
+                }
+            });
+
+        } catch (error) {
+            console.error("❌ Database/Server Error:", error.message);
+            res.status(500).json({ success: false, message: "Terjadi kesalahan pada server" });
+        }
+    });
 };
 
 exports.changePassword = async (req, res) => {
@@ -402,7 +424,7 @@ exports.requestReset = async (req, res) => {
     const { email } = req.body;
     try {
         const [user] = await db.query('SELECT id, full_name FROM users WHERE email = ?', [email]);
-        
+
         if (user.length === 0) {
             // Demi keamanan, tetap beri respons sukses agar hacker tidak tahu email mana yang terdaftar
             return res.json({ success: true, message: "Jika email terdaftar, instruksi reset akan dikirim." });
@@ -438,9 +460,9 @@ exports.resetPassword = async (req, res) => {
         );
 
         if (user.length === 0) {
-            return res.status(400).json({ 
-                success: false, 
-                message: "Token tidak valid atau sudah kedaluwarsa. Silakan minta link baru." 
+            return res.status(400).json({
+                success: false,
+                message: "Token tidak valid atau sudah kedaluwarsa. Silakan minta link baru."
             });
         }
 
@@ -454,15 +476,15 @@ exports.resetPassword = async (req, res) => {
             [hashedPassword, user[0].id]
         );
 
-        res.json({ 
-            success: true, 
-            message: "Password Anda berhasil diperbarui. Silakan login." 
+        res.json({
+            success: true,
+            message: "Password Anda berhasil diperbarui. Silakan login."
         });
     } catch (error) {
         console.error("❌ Reset Password Error:", error);
-        res.status(500).json({ 
-            success: false, 
-            message: "Terjadi kesalahan server saat memperbarui password." 
+        res.status(500).json({
+            success: false,
+            message: "Terjadi kesalahan server saat memperbarui password."
         });
     }
 };
