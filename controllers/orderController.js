@@ -8,7 +8,7 @@ const { sendPushNotification } = require('../services/notificationService');
  */
 const releaseFundsToMitra = async (connection, orderId) => {
     console.log(`[DEBUG] === Memulai Proses Pencairan Dana Order #${orderId} ===`);
-    
+
     const [existingTx] = await connection.execute(
         "SELECT id FROM wallet_transactions WHERE description LIKE ?",
         [`%Order #${orderId}%`]
@@ -30,7 +30,7 @@ const releaseFundsToMitra = async (connection, orderId) => {
         console.error(`[DEBUG] [ERROR] Order #${orderId} tidak ditemukan.`);
         return false;
     }
-    
+
     const { total_price, discount_amount, mitra_user_id } = order[0];
 
     const paidByCustomer = parseFloat(total_price) || 0;
@@ -106,7 +106,7 @@ exports.createOrder = async (req, res) => {
 
             if (vouchers.length > 0) {
                 const v = vouchers[0];
-                
+
                 // 2. Hitung jumlah penggunaan oleh user ini
                 const [usageResult] = await connection.execute(
                     "SELECT COUNT(*) as total_usage FROM voucher_usages WHERE voucher_id = ? AND user_id = ?",
@@ -120,7 +120,7 @@ exports.createOrder = async (req, res) => {
                 if (currentUsage < limit) {
                     appliedVoucherId = v.id;
                     discountAmount = Math.floor(rincian_biaya.subtotal_layanan * (v.discount_percent / 100));
-                    
+
                     if (v.max_discount_amount && discountAmount > v.max_discount_amount) {
                         discountAmount = parseFloat(v.max_discount_amount);
                     }
@@ -132,7 +132,7 @@ exports.createOrder = async (req, res) => {
                 console.warn(`[DEBUG] Voucher ${voucher_code} tidak valid/aktif/expired`);
             }
         }
-        
+
         const finalTotalPrice = rincian_biaya.total_akhir - discountAmount;
 
         // 4. Simpan Order
@@ -275,7 +275,7 @@ exports.getAllOrdersAdmin = async (req, res) => {
             JOIN stores s ON o.store_id = s.id
             JOIN users u ON o.customer_id = u.id
             ORDER BY o.order_date DESC`; // Urutkan dari yang terbaru
-            
+
         const [rows] = await db.execute(sql);
         res.status(200).json({ success: true, data: rows });
     } catch (error) {
@@ -302,32 +302,32 @@ exports.getRefundHistory = async (req, res) => {
             WHERE p.payment_status = 'refund'
             ORDER BY p.transaction_time DESC
         `;
-            
+
         const [rows] = await db.execute(sql);
-        
-        res.status(200).json({ 
-            success: true, 
+
+        res.status(200).json({
+            success: true,
             message: "Berhasil mengambil riwayat refund",
-            data: rows 
+            data: rows
         });
     } catch (error) {
-        console.error("Error Get Refund History:", error.message); 
-        res.status(500).json({ 
-            success: false, 
-            error: error.message 
+        console.error("Error Get Refund History:", error.message);
+        res.status(500).json({
+            success: false,
+            error: error.message
         });
     }
 };
 
 exports.updateOrderStatus = async (req, res) => {
     const { id } = req.params;
-    const { status } = req.body; // Status yang dikirim dari aplikasi Mitra
+    const { status, notes } = req.body; // Menambah notes jika ada alasan pembatalan
     const connection = await db.getConnection();
 
     try {
         await connection.beginTransaction();
 
-        // 1. Ambil data order & info pelanggan (Lock row untuk konsistensi)
+        // 1. Ambil data order & info pelanggan
         const [orderData] = await connection.execute(
             `SELECT o.status, o.proof_image_url, u.fcm_token, u.full_name 
              FROM orders o 
@@ -345,7 +345,7 @@ exports.updateOrderStatus = async (req, res) => {
         const customerFcm = orderData[0].fcm_token;
         const customerName = orderData[0].full_name;
 
-        // 2. Validasi status final (Jika sudah completed/cancelled tidak boleh diubah lagi)
+        // 2. Validasi status final
         if (['completed', 'cancelled'].includes(currentStatus)) {
             if (req.file) fs.unlinkSync(req.file.path);
             await connection.rollback();
@@ -358,32 +358,39 @@ exports.updateOrderStatus = async (req, res) => {
             proofImageUrl = req.file.path.replace(/\\/g, '/');
         }
 
-        // 4. LOGIKA MAPPING STATUS (DIPERBAIKI)
+        // 4. LOGIKA MAPPING STATUS
         let statusToSave = status;
+        let cancelledBy = null;
         let responseMessage = `Status berhasil diperbarui ke ${status}`;
 
         if (status === 'completed') {
-            // Mitra klik "Selesai", tapi kita jangan set 'completed' di DB.
-            // Kita biarkan status tetap 'working' agar dana TIDAK cair otomatis.
-            // Keberadaan proof_image_url akan membuat order ini muncul di "Menunggu Konfirmasi" pada dashboard.
             if (!req.file && !proofImageUrl) {
                 await connection.rollback();
                 return res.status(400).json({ success: false, message: "Bukti foto wajib diunggah untuk menyelesaikan pekerjaan." });
             }
             statusToSave = 'working';
-            responseMessage = "Laporan pengerjaan terkirim. Menunggu konfirmasi pelanggan untuk pencairan dana.";
+            responseMessage = "Laporan pengerjaan terkirim. Menunggu konfirmasi pelanggan.";
+        }
+        else if (status === 'cancelled') {
+            // Karena ini adalah controller yang diakses Mitra, maka kita set 'mitra'
+            cancelledBy = 'mitra';
+            responseMessage = "Pesanan berhasil dibatalkan.";
         }
 
-        // 5. Eksekusi Update ke Database
+        // 5. Eksekusi Update ke Database (Menambahkan cancelled_by)
         await connection.execute(
-            "UPDATE orders SET status = ?, proof_image_url = ? WHERE id = ?",
-            [statusToSave, proofImageUrl, id]
+            "UPDATE orders SET status = ?, proof_image_url = ?, cancelled_by = ? WHERE id = ?",
+            [statusToSave, proofImageUrl, cancelledBy, id]
         );
 
-        // 6. Simpan Log Aktivitas
-        const logNotes = status === 'completed'
+        // 6. Simpan Log Aktivitas (Diperjelas untuk pembatalan)
+        let logNotes = status === 'completed'
             ? `Mitra melaporkan pekerjaan selesai (Menunggu konfirmasi)`
             : `Status diperbarui ke ${status} oleh mitra`;
+
+        if (status === 'cancelled') {
+            logNotes = `Dibatalkan oleh mitra. Alasan: ${notes || 'Tidak ada alasan'}`;
+        }
 
         await connection.execute(
             "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, ?, ?)",
@@ -392,23 +399,24 @@ exports.updateOrderStatus = async (req, res) => {
 
         await connection.commit();
 
-        // 7. RESPON KE CLIENT (Mitra)
+        // 7. RESPON KE CLIENT
         res.status(200).json({
             success: true,
             message: responseMessage,
-            data: { orderId: id, status: statusToSave, proof_image_url: proofImageUrl }
+            data: { orderId: id, status: statusToSave, cancelled_by: cancelledBy }
         });
 
-        // 8. PROSES NOTIFIKASI FCM (Background Process)
+        // 8. PROSES NOTIFIKASI FCM
         if (customerFcm) {
             const statusMap = {
                 'accepted': 'telah diterima oleh teknisi',
-                'on_the_way': 'sedang menuju lokasi Anda ',
-                'working': 'sedang dikerjakan ',
-                'completed': 'telah selesai dikerjakan dan menunggu konfirmasi Anda ✅'
+                'on_the_way': 'sedang menuju lokasi Anda',
+                'working': 'sedang dikerjakan',
+                'completed': 'telah selesai dikerjakan dan menunggu konfirmasi Anda ✅',
+                'cancelled': 'telah dibatalkan oleh mitra ❌'
             };
 
-            const title = "Update Pesanan 🔔";
+            const title = status === 'cancelled' ? "Pesanan Dibatalkan ❌" : "Update Pesanan 🔔";
             const body = `Halo ${customerName}, pesanan Anda ${statusMap[status] || status}`;
 
             sendPushNotification(customerFcm, title, body, {
@@ -421,7 +429,6 @@ exports.updateOrderStatus = async (req, res) => {
     } catch (error) {
         if (connection) await connection.rollback();
         if (req.file) fs.unlinkSync(req.file.path);
-
         console.error("🔥 Error Update Status:", error);
         if (!res.headersSent) {
             res.status(500).json({ success: false, message: "Terjadi kesalahan pada server.", error: error.message });
