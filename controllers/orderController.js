@@ -247,11 +247,20 @@ exports.getUserOrders = async (req, res) => {
     try {
         const { userId } = req.params;
         const sql = `
-            SELECT o.id, o.status, o.total_price, o.scheduled_date, o.scheduled_time, o.order_date, s.store_name as mitra_name 
+            SELECT 
+                o.id, 
+                o.status, 
+                o.total_price, 
+                o.scheduled_date, 
+                o.scheduled_time, 
+                o.order_date, 
+                o.cancelled_by, 
+                s.store_name as mitra_name 
             FROM orders o
             JOIN stores s ON o.store_id = s.id
             WHERE o.customer_id = ?
             ORDER BY o.order_date DESC`;
+            
         const [rows] = await db.execute(sql, [userId]);
         res.status(200).json({ success: true, data: rows });
     } catch (error) {
