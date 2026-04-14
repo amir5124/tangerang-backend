@@ -300,6 +300,8 @@ exports.getAllOrdersAdmin = async (req, res) => {
                 o.scheduled_date, 
                 o.scheduled_time, 
                 o.order_date, 
+                o.cancelled_by,
+                o.cancel_reason,
                 s.store_name as mitra_name,
                 u.full_name as customer_name 
             FROM orders o
@@ -310,6 +312,7 @@ exports.getAllOrdersAdmin = async (req, res) => {
         const [rows] = await db.execute(sql);
         res.status(200).json({ success: true, data: rows });
     } catch (error) {
+        console.error("❌ Get All Orders Admin Error:", error.message);
         res.status(500).json({ success: false, error: error.message });
     }
 };
