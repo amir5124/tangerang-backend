@@ -43,6 +43,10 @@ exports.register = async (req, res) => {
         const userId = userResult.insertId;
         let storeId = null;
 
+        // --- PEMBUATAN WALLET UNTUK SEMUA ROLE ---
+        await db.query('INSERT INTO wallets (user_id, balance) VALUES (?, 0)', [userId]);
+        console.log(`💳 [Wallet Created] Wallet otomatis dibuat untuk UID: ${userId}`);
+
         if (role === 'mitra') {
             const [storeResult] = await db.query(
                 `INSERT INTO stores (user_id, store_name, category, address, latitude, longitude, approval_status, is_active) 
@@ -50,7 +54,7 @@ exports.register = async (req, res) => {
                 [userId, `${full_name} Service`, 'ac', 'Alamat belum diatur']
             );
             storeId = storeResult.insertId;
-            await db.query('INSERT INTO wallets (user_id, balance) VALUES (?, 0)', [userId]);
+            // Baris wallet di sini dihapus karena sudah dipindah ke atas agar global
         }
 
         const token = jwt.sign({ id: userId, role: role }, JWT_SECRET, { expiresIn: '30d' });
@@ -96,6 +100,103 @@ exports.register = async (req, res) => {
     } catch (error) {
         console.error("❌ Register Error:", error.message);
         res.status(500).json({ success: false, message: "Gagal register", error: error.message });
+    }
+};
+
+exports.googleAuth = async (req, res) => {
+    const { idToken, role, fcm_token, targetRole } = req.body;
+
+    console.log("🔍 [DEBUG GOOGLE] Incoming Request:", { targetRole, providedRole: role, hasFcmToken: !!fcm_token });
+
+    try {
+        const ticket = await client.verifyIdToken({
+            idToken: idToken,
+            audience: [GOOGLE_CLIENT_ID_ADMIN, GOOGLE_CLIENT_ID_CUSTOMER],
+        });
+
+        const payload = ticket.getPayload();
+        const { email, name, picture } = payload;
+
+        console.log(`🔍 [DEBUG GOOGLE] Token Verified. Email: ${email}, Name: ${name}`);
+
+        const [rows] = await db.query("SELECT * FROM users WHERE email = ?", [email]);
+        let user = rows[0];
+
+        if (!user) {
+            console.log(`🆕 [DEBUG GOOGLE] User ${email} tidak ditemukan. Memulai proses REGISTER.`);
+
+            const [result] = await db.query(
+                "INSERT INTO users (full_name, email, phone_number, password, role, fcm_token, profile_picture) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [name, email, null, 'GOOGLE_AUTH', role || 'customer', fcm_token || null, picture || null]
+            );
+
+            const userId = result.insertId;
+            console.log(`✅ [DEBUG GOOGLE] User baru berhasil dibuat. UID: ${userId}`);
+
+            // --- PEMBUATAN WALLET UNTUK SEMUA USER BARU VIA GOOGLE ---
+            await db.query('INSERT INTO wallets (user_id, balance) VALUES (?, 0)', [userId]);
+            console.log(`💳 [DEBUG GOOGLE] Wallet otomatis dibuat untuk UID: ${userId}`);
+
+            if (role === 'mitra') {
+                console.log(`🏪 [DEBUG GOOGLE] Inisialisasi toko untuk mitra UID: ${userId}`);
+                await db.query(
+                    `INSERT INTO stores (user_id, store_name, category, address, latitude, longitude, approval_status, is_active) 
+                     VALUES (?, ?, ?, ?, 0, 0, 'pending', 0)`,
+                    [userId, `${name} Service`, 'ac', 'Alamat belum diatur']
+                );
+                // Baris wallet di sini dihapus karena sudah dipindah ke atas agar global
+            }
+
+            const [newUser] = await db.query("SELECT * FROM users WHERE id = ?", [userId]);
+            user = newUser[0];
+        } else {
+            console.log(`🔑 [DEBUG GOOGLE] User ${email} ditemukan. Memulai proses LOGIN.`);
+
+            if (targetRole && user.role !== targetRole) {
+                console.warn(`🚫 [DEBUG GOOGLE] Role Mismatch for ${email}. Access Blocked.`);
+                return res.status(403).json({
+                    success: false,
+                    message: `Akses Ditolak. Akun Google ini terdaftar sebagai ${user.role}.`
+                });
+            }
+
+            if (fcm_token) {
+                console.log(`📱 [DEBUG GOOGLE] Updating FCM Token for UID: ${user.id}`);
+                await db.query("UPDATE users SET fcm_token = ? WHERE id = ?", [fcm_token, user.id]);
+            }
+        }
+
+        let storeId = null;
+        if (user.role === 'mitra') {
+            const [stores] = await db.query('SELECT id FROM stores WHERE user_id = ?', [user.id]);
+            storeId = stores[0]?.id || null;
+            console.log(`🏪 [DEBUG GOOGLE] Store ID ditemukan: ${storeId}`);
+        }
+
+        const token = generateToken(user);
+        console.log(`🚀 [DEBUG GOOGLE] Login Success. Sending response for UID: ${user.id}`);
+
+        res.status(200).json({
+            success: true,
+            token,
+            user: {
+                id: user.id,
+                full_name: user.full_name,
+                email: user.email,
+                role: user.role,
+                phone_number: user.phone_number,
+                profile_picture: user.profile_picture,
+                store_id: storeId
+            }
+        });
+
+    } catch (error) {
+        console.error("❌ [DEBUG GOOGLE] FATAL ERROR:", error.message);
+        res.status(401).json({
+            success: false,
+            message: "Token Google tidak valid atau aplikasi tidak terdaftar",
+            error: error.message
+        });
     }
 };
 
@@ -159,98 +260,7 @@ exports.login = async (req, res) => {
     }
 };
 
-exports.googleAuth = async (req, res) => {
-    const { idToken, role, fcm_token, targetRole } = req.body;
 
-    console.log("🔍 [DEBUG GOOGLE] Incoming Request:", { targetRole, providedRole: role, hasFcmToken: !!fcm_token });
-
-    try {
-        const ticket = await client.verifyIdToken({
-            idToken: idToken,
-            audience: [GOOGLE_CLIENT_ID_ADMIN, GOOGLE_CLIENT_ID_CUSTOMER],
-        });
-
-        const payload = ticket.getPayload();
-        const { email, name, picture } = payload;
-
-        console.log(`🔍 [DEBUG GOOGLE] Token Verified. Email: ${email}, Name: ${name}`);
-
-        const [rows] = await db.query("SELECT * FROM users WHERE email = ?", [email]);
-        let user = rows[0];
-
-        if (!user) {
-            console.log(`🆕 [DEBUG GOOGLE] User ${email} tidak ditemukan. Memulai proses REGISTER.`);
-
-            const [result] = await db.query(
-                "INSERT INTO users (full_name, email, phone_number, password, role, fcm_token, profile_picture) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                [name, email, null, 'GOOGLE_AUTH', role || 'customer', fcm_token || null, picture || null]
-            );
-
-            const userId = result.insertId;
-            console.log(`✅ [DEBUG GOOGLE] User baru berhasil dibuat. UID: ${userId}`);
-
-            if (role === 'mitra') {
-                console.log(`🏪 [DEBUG GOOGLE] Inisialisasi toko untuk mitra UID: ${userId}`);
-                await db.query(
-                    `INSERT INTO stores (user_id, store_name, category, address, latitude, longitude, approval_status, is_active) 
-                     VALUES (?, ?, ?, ?, 0, 0, 'pending', 0)`,
-                    [userId, `${name} Service`, 'ac', 'Alamat belum diatur']
-                );
-                await db.query('INSERT INTO wallets (user_id, balance) VALUES (?, 0)', [userId]);
-            }
-
-            const [newUser] = await db.query("SELECT * FROM users WHERE id = ?", [userId]);
-            user = newUser[0];
-        } else {
-            console.log(`🔑 [DEBUG GOOGLE] User ${email} ditemukan. Memulai proses LOGIN.`);
-
-            if (targetRole && user.role !== targetRole) {
-                console.warn(`🚫 [DEBUG GOOGLE] Role Mismatch for ${email}. Access Blocked.`);
-                return res.status(403).json({
-                    success: false,
-                    message: `Akses Ditolak. Akun Google ini terdaftar sebagai ${user.role}.`
-                });
-            }
-
-            if (fcm_token) {
-                console.log(`📱 [DEBUG GOOGLE] Updating FCM Token for UID: ${user.id}`);
-                await db.query("UPDATE users SET fcm_token = ? WHERE id = ?", [fcm_token, user.id]);
-            }
-        }
-
-        let storeId = null;
-        if (user.role === 'mitra') {
-            const [stores] = await db.query('SELECT id FROM stores WHERE user_id = ?', [user.id]);
-            storeId = stores[0]?.id || null;
-            console.log(`🏪 [DEBUG GOOGLE] Store ID ditemukan: ${storeId}`);
-        }
-
-        const token = generateToken(user);
-        console.log(`🚀 [DEBUG GOOGLE] Login Success. Sending response for UID: ${user.id}`);
-
-        res.status(200).json({
-            success: true,
-            token,
-            user: {
-                id: user.id,
-                full_name: user.full_name,
-                email: user.email,
-                role: user.role,
-                phone_number: user.phone_number,
-                profile_picture: user.profile_picture,
-                store_id: storeId
-            }
-        });
-
-    } catch (error) {
-        console.error("❌ [DEBUG GOOGLE] FATAL ERROR:", error.message);
-        res.status(401).json({
-            success: false,
-            message: "Token Google tidak valid atau aplikasi tidak terdaftar",
-            error: error.message
-        });
-    }
-};
 
 exports.logout = async (req, res) => {
     const userId = req.user ? req.user.id : req.body.userId;
