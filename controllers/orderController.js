@@ -297,27 +297,31 @@ exports.getAllOrdersAdmin = async (req, res) => {
                 o.id, 
                 o.status, 
                 o.total_price, 
+                o.platform_fee,
+                o.service_fee,
                 o.scheduled_date, 
                 o.scheduled_time, 
                 o.order_date, 
-                o.cancelled_by,
-                o.cancel_reason,
                 s.store_name as mitra_name,
-                u.full_name as customer_name 
+                u.full_name as customer_name,
+                p.payment_method,
+                p.payment_type,
+                p.payment_status
             FROM orders o
             JOIN stores s ON o.store_id = s.id
             JOIN users u ON o.customer_id = u.id
-            ORDER BY o.order_date DESC`; // Urutkan dari yang terbaru
+            LEFT JOIN payments p ON o.id = p.order_id
+            ORDER BY o.order_date DESC`;
 
         const [rows] = await db.execute(sql);
+        
+        console.log(`✅ Berhasil mengambil ${rows.length} data untuk Admin`);
         res.status(200).json({ success: true, data: rows });
     } catch (error) {
         console.error("❌ Get All Orders Admin Error:", error.message);
         res.status(500).json({ success: false, error: error.message });
     }
 };
-
-// Di dalam orderController.js
 
 exports.getRefundHistory = async (req, res) => {
     try {
