@@ -335,7 +335,9 @@ exports.getRefundHistory = async (req, res) => {
                 p.transaction_time as tanggal_refund,
                 o.status as order_status,
                 o.platform_fee,
-                o.service_fee
+                o.service_fee,
+                o.cancelled_by,
+                o.cancel_reason
             FROM payments p
             JOIN orders o ON p.order_id = o.id
             JOIN users u ON o.customer_id = u.id
