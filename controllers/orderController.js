@@ -302,6 +302,8 @@ exports.getAllOrdersAdmin = async (req, res) => {
                 o.scheduled_date, 
                 o.scheduled_time, 
                 o.order_date, 
+                o.cancelled_by,   
+                o.cancel_reason,  
                 s.store_name as mitra_name,
                 u.full_name as customer_name,
                 p.payment_method,
