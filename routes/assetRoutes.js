@@ -1,15 +1,14 @@
 const express = require('express');
 const router = express.Router();
-const multer = require('multer');
 const assetController = require('../controllers/assetController');
 
-// Simpan di RAM (Memory) untuk menghindari masalah permission di Docker
-const upload = multer({ 
-    storage: multer.memoryStorage(),
-    limits: { fileSize: 5 * 1024 * 1024 } 
-});
-
+// Route untuk mengambil daftar asset
 router.get('/', assetController.getAssets);
+
+// Route untuk upload gambar via Base64 (Mobile friendly)
 router.post('/upload-base64', assetController.uploadAndUpdateAssetBase64);
+
+// Route baru untuk mengupdate nama layanan berdasarkan ID
+router.put('/update-info/:id', assetController.updateAssetInfo);
 
 module.exports = router;
