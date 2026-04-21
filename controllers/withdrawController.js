@@ -219,7 +219,7 @@ exports.adminInquiryWithdraw = async (req, res) => {
         const headers = { "client-id": LINKQU_CONFIG.clientId, "client-secret": LINKQU_CONFIG.clientSecret };
 
         // Request ke API LinkQu
-        const response = method === "GET" 
+        const response = method === "GET"
             ? await axios.get(`${LINKQU_CONFIG.baseUrl}${endpoint}`, { params: payload, headers })
             : await axios.post(`${LINKQU_CONFIG.baseUrl}${endpoint}`, payload, { headers });
 
@@ -281,12 +281,14 @@ exports.adminExecuteWithdraw = async (req, res) => {
             headers: { "client-id": LINKQU_CONFIG.clientId, "client-secret": LINKQU_CONFIG.clientSecret }
         });
 
+        // Di dalam exports.adminExecuteWithdraw
         if (response.data.response_code === "00" || response.data.status === "SUCCESS" || response.data.status === "PENDING") {
-            // Catat di transfers dengan status PENDING
+            // Pastikan user_id diisi 0 agar LEFT JOIN di atas bisa menangkapnya sebagai 'ADMIN'
             await db.execute(
                 "INSERT INTO transfers (inquiry_reff, partner_reff, amount, user_id, status) VALUES (?,?,?,?,?)",
-                [inquiry_reff, idtrxPay, data.amount, admin_id || 0, "PENDING"]
+                [inquiry_reff, idtrxPay, data.amount, 0, "PENDING"]
             );
+            console.log("💾 Transaksi Admin berhasil dicatat ke Database");
         }
 
         res.json({ success: true, data: response.data });
@@ -405,16 +407,16 @@ exports.getAllHistory = async (req, res) => {
         const query = `
             SELECT 
                 t.*, 
-                u.full_name, 
-                u.email,
+               
+                IFNULL(u.full_name, 'SYSTEM/ADMIN') as full_name, 
+                IFNULL(u.email, '-') as email,
                 wt.description as wallet_description,
                 wt.type as transaction_type,
                 wt.amount as transaction_amount
             FROM transfers t
-            JOIN users u ON t.user_id = u.id
-            -- Gabungkan ke wallets untuk mendapatkan wallet_id
+         
+            LEFT JOIN users u ON t.user_id = u.id
             LEFT JOIN wallets w ON u.id = w.user_id
-            -- Gabungkan ke wallet_transactions berdasarkan kecocokan partner_reff di deskripsi
             LEFT JOIN wallet_transactions wt ON wt.wallet_id = w.id 
                 AND wt.description LIKE CONCAT('%', t.partner_reff, '%')
             ORDER BY t.created_at DESC
