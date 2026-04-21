@@ -181,6 +181,121 @@ exports.executeWithdraw = async (req, res) => {
     }
 };
 
+// --- 1. INQUIRY WITHDRAW (ADMIN VERSION) ---
+exports.adminInquiryWithdraw = async (req, res) => {
+    console.log("\n👑 [ADMIN] === INQUIRY START ===");
+    const { amount, bank_code, account_number, admin_id } = req.body;
+
+    try {
+        if (!amount || !bank_code || !account_number) {
+            return res.status(400).json({ success: false, message: "Input tidak lengkap" });
+        }
+
+        // Logic Bank Mapping & Route (Sama seperti user biasa)
+        const idtrx = `ADM-INQ${Date.now()}`;
+        const realBankCode = BANK_MAPPING[bank_code.toUpperCase()] || bank_code;
+        const isEwallet = E_WALLET_CODES.includes(bank_code.toUpperCase());
+        const isVA = VA_CODES.includes(bank_code.toUpperCase());
+
+        let endpoint, method;
+        if (isEwallet) { endpoint = "/transaction/reload/inquiry"; method = "GET"; }
+        else if (isVA) { endpoint = "/transaction/transferva/inquiry"; method = "POST"; }
+        else { endpoint = "/transaction/withdraw/inquiry"; method = "POST"; }
+
+        const signature = generateSignature(endpoint, method, {
+            amount, accountnumber: account_number, bankcode: realBankCode, partnerreff: idtrx
+        });
+
+        const payload = {
+            username: LINKQU_CONFIG.username,
+            pin: LINKQU_CONFIG.pin,
+            bankcode: realBankCode,
+            accountnumber: account_number,
+            amount,
+            partner_reff: idtrx,
+            signature
+        };
+
+        const headers = { "client-id": LINKQU_CONFIG.clientId, "client-secret": LINKQU_CONFIG.clientSecret };
+
+        // Request ke API LinkQu
+        const response = method === "GET" 
+            ? await axios.get(`${LINKQU_CONFIG.baseUrl}${endpoint}`, { params: payload, headers })
+            : await axios.post(`${LINKQU_CONFIG.baseUrl}${endpoint}`, payload, { headers });
+
+        // Simpan ke Tabel Inquiries (Gunakan admin_id atau 0)
+        await db.execute(
+            "INSERT INTO inquiries (inquiry_reff, partner_reff, bankcode, accountnumber, amount, user_id) VALUES (?,?,?,?,?,?)",
+            [response.data.inquiry_reff, idtrx, realBankCode, account_number, amount, admin_id || 0]
+        );
+
+        res.json({ success: true, data: response.data });
+    } catch (error) {
+        const errorData = error.response?.data || error.message;
+        res.status(500).json({ success: false, message: "Admin Inquiry Gagal", error: errorData });
+    }
+};
+
+// --- 2. EXECUTE WITHDRAW (ADMIN VERSION) ---
+exports.adminExecuteWithdraw = async (req, res) => {
+    console.log("\n👑 [ADMIN] === EXECUTE START ===");
+    const { inquiry_reff, admin_id } = req.body;
+
+    try {
+        // Cari data inquiry tanpa memfilter user_id (karena admin)
+        const [inqData] = await db.query("SELECT * FROM inquiries WHERE inquiry_reff = ?", [inquiry_reff]);
+
+        if (!inqData.length) {
+            return res.status(404).json({ success: false, message: "Data inquiry tidak ditemukan" });
+        }
+
+        const data = inqData[0];
+        const idtrxPay = `ADM-PAY${Date.now()}`;
+
+        let endpoint = "/transaction/withdraw/payment";
+        if (E_WALLET_CODES.includes(data.bankcode.toUpperCase())) endpoint = "/transaction/reload/payment";
+        if (VA_CODES.includes(data.bankcode.toUpperCase())) endpoint = "/transaction/transferva/payment";
+
+        const signature = generateSignature(endpoint, "POST", {
+            amount: data.amount,
+            accountnumber: data.accountnumber,
+            bankcode: data.bankcode,
+            partnerreff: idtrxPay,
+            inquiryreff: inquiry_reff
+        });
+
+        const payload = {
+            username: LINKQU_CONFIG.username,
+            pin: LINKQU_CONFIG.pin,
+            bankcode: data.bankcode,
+            accountnumber: data.accountnumber,
+            amount: data.amount,
+            partner_reff: idtrxPay,
+            inquiry_reff: inquiry_reff,
+            signature,
+            remark: "Withdraw Admin Global",
+            url_callback: "https://backend.tangerangfast.online/api/withdraw/callback"
+        };
+
+        const response = await axios.post(`${LINKQU_CONFIG.baseUrl}${endpoint}`, payload, {
+            headers: { "client-id": LINKQU_CONFIG.clientId, "client-secret": LINKQU_CONFIG.clientSecret }
+        });
+
+        if (response.data.response_code === "00" || response.data.status === "SUCCESS" || response.data.status === "PENDING") {
+            // Catat di transfers dengan status PENDING
+            await db.execute(
+                "INSERT INTO transfers (inquiry_reff, partner_reff, amount, user_id, status) VALUES (?,?,?,?,?)",
+                [inquiry_reff, idtrxPay, data.amount, admin_id || 0, "PENDING"]
+            );
+        }
+
+        res.json({ success: true, data: response.data });
+    } catch (error) {
+        const errorData = error.response?.data || error.message;
+        res.status(500).json({ success: false, message: "Admin Payment Gagal", error: errorData });
+    }
+};
+
 // 3. CALLBACK WITHDRAW (UPDATE SALDO MITRA)
 exports.handleWithdrawCallback = async (req, res) => {
     console.log("\n🔔 [WEBHOOK] === CALLBACK RECEIVED ===");
@@ -204,21 +319,33 @@ exports.handleWithdrawCallback = async (req, res) => {
             if (rows.length > 0) {
                 const transfer = rows[0];
 
-                // 2. AMBIL BIAYA ADMIN DARI TABEL disburse_admin
+                // --- START PENGECEKAN ADMIN WITHDRAW ---
+                // Jika user_id adalah 0 (Admin), langsung sukseskan tanpa potong saldo wallet
+                if (transfer.user_id === 0) {
+                    await connection.execute(
+                        "UPDATE transfers SET status = 'SUCCESS', updated_at = NOW() WHERE partner_reff = ?",
+                        [partner_reff]
+                    );
+                    await connection.commit();
+                    console.log(`✅ [ADMIN] Withdraw sukses tanpa potong saldo internal untuk: ${partner_reff}`);
+                    return res.status(200).send("OK");
+                }
+                // --- END PENGECEKAN ADMIN WITHDRAW ---
+
+                // 2. AMBIL BIAYA ADMIN DARI TABEL disburse_admin (Untuk User Biasa)
                 const [adminConfig] = await connection.execute(
                     "SELECT key_value FROM disburse_admin WHERE key_name = 'withdraw_fee' LIMIT 1"
                 );
 
-                // Default ke 0 jika tidak ditemukan di database, lalu konversi ke angka
                 const withdrawFee = adminConfig.length > 0 ? parseInt(adminConfig[0].key_value) : 0;
 
-                // 3. HITUNG TOTAL YANG HARUS DIPOTONG (Nominal Withdraw + Biaya Admin)
+                // 3. HITUNG TOTAL YANG HARUS DIPOTONG
                 const totalDebit = parseFloat(transfer.amount) + withdrawFee;
 
                 console.log(`💸 Detail Potong Saldo: Nominal(${transfer.amount}) + Fee(${withdrawFee}) = Total(${totalDebit})`);
                 console.log(`👤 User ID: ${transfer.user_id}`);
 
-                // 4. Update Saldo Wallet (Potong sebesar totalDebit)
+                // 4. Update Saldo Wallet
                 const [updateWallet] = await connection.execute(
                     "UPDATE wallets SET balance = balance - ? WHERE user_id = ? AND balance >= ?",
                     [totalDebit, transfer.user_id, totalDebit]
