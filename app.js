@@ -32,7 +32,8 @@ const allowedOrigins = [
     'http://localhost:8082',
     'http://localhost:8081',
     'https://admin-tfast.netlify.app',
-    'https://tangerangfast.online'
+    'https://tangerangfast.online',
+    'https://app.tangerangfast.com'
 ];
 
 app.use(cors({
