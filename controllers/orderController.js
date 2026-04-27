@@ -135,7 +135,7 @@ exports.createOrder = async (req, res) => {
 
         const finalTotalPrice = rincian_biaya.total_akhir - discountAmount;
 
-        // 4. Simpan Order
+        // 4. Simpan Order (Pastikan kolom discount_amount tersedia di tabel orders)
         const sqlOrder = `INSERT INTO orders 
             (customer_id, store_id, scheduled_date, scheduled_time, building_type, 
              address_customer, lat_customer, lng_customer, total_price, 
@@ -159,7 +159,7 @@ exports.createOrder = async (req, res) => {
             );
         }
 
-        // 6. Simpan item & log pembayaran (sama seperti kode sebelumnya)
+        // 6. Simpan item & log pembayaran
         const sqlItem = `INSERT INTO order_items (order_id, service_name, qty, price_satuan, subtotal) VALUES (?, ?, ?, ?, ?)`;
         for (const item of layananTerpilih) {
             await connection.execute(sqlItem, [newOrderId, item.nama, item.qty, item.hargaSatuan, (item.qty * item.hargaSatuan)]);
@@ -176,7 +176,19 @@ exports.createOrder = async (req, res) => {
         );
 
         await connection.commit();
-        res.status(201).json({ success: true, message: "Pesanan berhasil dibuat", order_id: newOrderId });
+
+        // RESPONSE API: Sekarang menyertakan detail diskon agar muncul di rincian aplikasi
+        res.status(201).json({ 
+            success: true, 
+            message: "Pesanan berhasil dibuat", 
+            order_id: newOrderId,
+            rincian_pembayaran: {
+                subtotal_awal: rincian_biaya.total_akhir,
+                potongan_diskon: discountAmount,
+                total_bayar: finalTotalPrice,
+                voucher_code: voucher_code || null
+            }
+        });
 
     } catch (error) {
         if (connection) await connection.rollback();
@@ -186,7 +198,6 @@ exports.createOrder = async (req, res) => {
         if (connection) connection.release();
     }
 };
-
 
 exports.getOrderDetail = async (req, res) => {
     const { id } = req.params;
@@ -199,14 +210,13 @@ exports.getOrderDetail = async (req, res) => {
                 u.full_name AS customer_name, 
                 u.phone_number AS customer_phone, 
                 u.fcm_token AS customer_fcm,
-                -- Alamat diambil dari tabel orders (o), bukan users (u)
                 o.address_customer AS address_customer, 
                 m.full_name AS mitra_name, 
                 m.phone_number AS mitra_phone,
                 s.store_name,
-                -- Subquery Review
+                -- Menghitung kembali subtotal kotor jika diperlukan di frontend
+                (o.total_price + o.discount_amount) as original_subtotal,
                 (SELECT rating FROM reviews WHERE order_id = o.id LIMIT 1) as already_rated,
-                -- Subquery Items
                 (SELECT JSON_ARRAYAGG(
                     JSON_OBJECT('nama', service_name, 'qty', qty, 'hargaSatuan', price_satuan)
                  ) FROM order_items WHERE order_id = o.id) AS items
@@ -251,6 +261,7 @@ exports.getUserOrders = async (req, res) => {
                 o.id, 
                 o.status, 
                 o.total_price, 
+                o.discount_amount, -- Menambahkan kolom ini agar list order tahu ada diskon
                 o.scheduled_date, 
                 o.scheduled_time, 
                 o.order_date, 
