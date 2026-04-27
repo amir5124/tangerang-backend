@@ -43,7 +43,7 @@ exports.createPayment = async (req, res) => {
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?)`;
 
         console.log(`DEBUG: Inserting Order with Discount: Rp${discountVal}`);
-        
+
         const [orderResult] = await connection.execute(sqlOrder, [
             customer_id,
             store_id,
@@ -63,17 +63,30 @@ exports.createPayment = async (req, res) => {
 
         const newOrderId = orderResult.insertId;
 
-        // 3. LOGIKA VOUCHER (Jika ada voucher yang digunakan)
+        // 3. LOGIKA VOUCHER (SESUAI STRUKTUR TABEL)
         if (voucher_code && discountVal > 0) {
-            console.log(`DEBUG: Mencatat penggunaan voucher ${voucher_code} untuk order #${newOrderId}`);
-            
-            // Ambil ID Voucher berdasarkan kode
-            const [vouchers] = await connection.execute("SELECT id FROM vouchers WHERE code = ?", [voucher_code]);
-            if (vouchers.length > 0) {
-                await connection.execute(
-                    "INSERT INTO voucher_usages (voucher_id, customer_id, order_id, discount_applied) VALUES (?, ?, ?, ?)",
-                    [vouchers[0].id, customer_id, newOrderId, discountVal]
+            try {
+                console.log(`DEBUG: Mencari Voucher ID untuk kode: ${voucher_code}`);
+                const [vouchers] = await connection.execute(
+                    "SELECT id FROM vouchers WHERE code = ?",
+                    [voucher_code]
                 );
+
+                if (vouchers.length > 0) {
+                    const voucherId = vouchers[0].id;
+                    console.log(`DEBUG: Mencatat penggunaan voucher ID ${voucherId} ke voucher_usages`);
+
+                    // HANYA masukkan kolom yang ada di DESCRIBE: voucher_id, user_id, order_id
+                    await connection.execute(
+                        "INSERT INTO voucher_usages (voucher_id, user_id, order_id) VALUES (?, ?, ?)",
+                        [voucherId, customer_id, newOrderId]
+                    );
+                } else {
+                    console.warn(`[WARN] Kode voucher ${voucher_code} tidak ditemukan di database.`);
+                }
+            } catch (vErr) {
+                // Kita gunakan console.error tapi tidak menghentikan transaksi utama
+                console.error("!!! ERROR VOUCHER USAGES !!!", vErr.message);
             }
         }
 
