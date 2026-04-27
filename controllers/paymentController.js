@@ -27,15 +27,21 @@ exports.createPayment = async (req, res) => {
 
         const partner_reff = helpers.generatePartnerReff();
         const isQRIS = metode_pembayaran === 'QRIS';
-        const expired = helpers.getExpiredTimestamp(isQRIS ? 30 : 1440);
+
+        // --- PERBAIKAN LOGIKA EXPIRED PRESISI ---
+        const duration = isQRIS ? 30 : 1440;
+        // Mengunci waktu di Asia/Jakarta agar tidak meleset karena perbedaan jam server/UTC
+        const expiredMoment = moment().tz('Asia/Jakarta').add(duration, 'minutes');
+        const expired = expiredMoment.format('YYYYMMDDHHmmss'); // Format untuk payload LinkQu
+        const formattedExpired = expiredMoment.format('YYYY-MM-DD HH:mm:ss'); // Format untuk database
+        // ----------------------------------------
+
         const finalEmail = helpers.isValidEmail(kontak?.email) ? kontak.email : process.env.DEFAULT_EMAIL;
 
         // 1. VALIDASI DISKON
-        // Pastikan nilai diskon diambil dari rincian_biaya yang dikirim frontend
         const discountVal = parseFloat(rincian_biaya.diskon_voucher) || 0;
 
         // 2. SIMPAN KE TABEL ORDERS 
-        // Tambahkan kolom discount_amount di sini agar tidak 0.00
         const sqlOrder = `INSERT INTO orders 
             (customer_id, store_id, scheduled_date, scheduled_time, building_type, 
              address_customer, lat_customer, lng_customer, total_price, 
@@ -53,8 +59,8 @@ exports.createPayment = async (req, res) => {
             lokasi.alamatLengkap,
             lokasi.latitude || null,
             lokasi.longitude || null,
-            rincian_biaya.subtotal_layanan, // Ini harga dasar sebelum diskon & fee
-            discountVal,                    // <--- SEKARANG DISKON TERSIMPAN
+            rincian_biaya.subtotal_layanan,
+            discountVal,
             rincian_biaya.biaya_layanan_app,
             rincian_biaya.biaya_transaksi,
             catatan || null,
@@ -75,8 +81,6 @@ exports.createPayment = async (req, res) => {
                 if (vouchers.length > 0) {
                     const voucherId = vouchers[0].id;
                     console.log(`DEBUG: Mencatat penggunaan voucher ID ${voucherId} ke voucher_usages`);
-
-                    // HANYA masukkan kolom yang ada di DESCRIBE: voucher_id, user_id, order_id
                     await connection.execute(
                         "INSERT INTO voucher_usages (voucher_id, user_id, order_id) VALUES (?, ?, ?)",
                         [voucherId, customer_id, newOrderId]
@@ -85,7 +89,6 @@ exports.createPayment = async (req, res) => {
                     console.warn(`[WARN] Kode voucher ${voucher_code} tidak ditemukan di database.`);
                 }
             } catch (vErr) {
-                // Kita gunakan console.error tapi tidak menghentikan transaksi utama
                 console.error("!!! ERROR VOUCHER USAGES !!!", vErr.message);
             }
         }
@@ -98,11 +101,11 @@ exports.createPayment = async (req, res) => {
             ]);
         }
 
-        // 5. REQUEST KE LINKQU (Gunakan total_akhir yang sudah dipotong diskon)
+        // 5. REQUEST KE LINKQU
         const payload = {
             amount: rincian_biaya.total_akhir,
             partner_reff: partner_reff,
-            expired: expired,
+            expired: expired, // Menggunakan string YYYYMMDDHHmmss yang sudah presisi
             method: metode_pembayaran,
             nama: kontak.nama,
             email: finalEmail,
@@ -121,8 +124,7 @@ exports.createPayment = async (req, res) => {
             (order_id, customer_id, payment_method, transaction_id, gross_amount, payment_status, payment_type, expired_at, payment_details) 
             VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)`;
 
-        const formattedExpired = moment.tz(expired, 'YYYYMMDDHHmmss', 'Asia/Jakarta').format('YYYY-MM-DD HH:mm:ss');
-
+        // Menggunakan formattedExpired yang didefinisikan di awal (Asia/Jakarta)
         await connection.execute(sqlPayment, [
             newOrderId, customer_id, metode_pembayaran, partner_reff,
             rincian_biaya.total_akhir, isQRIS ? 'QRIS' : 'VA',
@@ -130,7 +132,7 @@ exports.createPayment = async (req, res) => {
         ]);
 
         await connection.commit();
-        console.log("DEBUG: Transaction Committed with Discount applied.");
+        console.log(`DEBUG: Transaction Committed. Expired set to: ${formattedExpired}`);
 
         res.json({
             success: true,
