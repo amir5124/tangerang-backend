@@ -17,7 +17,8 @@ exports.createPayment = async (req, res) => {
 
         const {
             customer_id, store_id, metode_pembayaran, jenisGedung,
-            jadwal, lokasi, rincian_biaya, layananTerpilih, catatan, kontak
+            jadwal, lokasi, rincian_biaya, layananTerpilih, catatan, kontak,
+            voucher_code // Tangkap kode voucher dari frontend
         } = req.body;
 
         if (!customer_id || !metode_pembayaran) {
@@ -29,17 +30,20 @@ exports.createPayment = async (req, res) => {
         const expired = helpers.getExpiredTimestamp(isQRIS ? 30 : 1440);
         const finalEmail = helpers.isValidEmail(kontak?.email) ? kontak.email : process.env.DEFAULT_EMAIL;
 
-        // 2. SIMPAN KE TABEL ORDERS 
-        // PERUBAHAN: Status awal diset 'unpaid' agar tidak muncul di aplikasi Mitra
-        // 2. SIMPAN KE TABEL ORDERS 
-        // PERBAIKAN: Tambahkan lat_customer dan lng_customer di sini
-        const sqlOrder = `INSERT INTO orders 
-(customer_id, store_id, scheduled_date, scheduled_time, building_type, 
- address_customer, lat_customer, lng_customer, total_price, 
- platform_fee, service_fee, status, customer_notes, items) 
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?)`;
+        // 1. VALIDASI DISKON
+        // Pastikan nilai diskon diambil dari rincian_biaya yang dikirim frontend
+        const discountVal = parseFloat(rincian_biaya.diskon_voucher) || 0;
 
-        console.log("DEBUG: Executing Order Insert with Coordinates...");
+        // 2. SIMPAN KE TABEL ORDERS 
+        // Tambahkan kolom discount_amount di sini agar tidak 0.00
+        const sqlOrder = `INSERT INTO orders 
+            (customer_id, store_id, scheduled_date, scheduled_time, building_type, 
+             address_customer, lat_customer, lng_customer, total_price, 
+             discount_amount, platform_fee, service_fee, status, customer_notes, items) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?)`;
+
+        console.log(`DEBUG: Inserting Order with Discount: Rp${discountVal}`);
+        
         const [orderResult] = await connection.execute(sqlOrder, [
             customer_id,
             store_id,
@@ -47,9 +51,10 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?)`;
             jadwal.waktu,
             jenisGedung,
             lokasi.alamatLengkap,
-            lokasi.latitude || null,  // Mapping Latitude
-            lokasi.longitude || null, // Mapping Longitude
-            rincian_biaya.subtotal_layanan,
+            lokasi.latitude || null,
+            lokasi.longitude || null,
+            rincian_biaya.subtotal_layanan, // Ini harga dasar sebelum diskon & fee
+            discountVal,                    // <--- SEKARANG DISKON TERSIMPAN
             rincian_biaya.biaya_layanan_app,
             rincian_biaya.biaya_transaksi,
             catatan || null,
@@ -58,7 +63,21 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?)`;
 
         const newOrderId = orderResult.insertId;
 
-        // 3. SIMPAN KE ORDER ITEMS
+        // 3. LOGIKA VOUCHER (Jika ada voucher yang digunakan)
+        if (voucher_code && discountVal > 0) {
+            console.log(`DEBUG: Mencatat penggunaan voucher ${voucher_code} untuk order #${newOrderId}`);
+            
+            // Ambil ID Voucher berdasarkan kode
+            const [vouchers] = await connection.execute("SELECT id FROM vouchers WHERE code = ?", [voucher_code]);
+            if (vouchers.length > 0) {
+                await connection.execute(
+                    "INSERT INTO voucher_usages (voucher_id, customer_id, order_id, discount_applied) VALUES (?, ?, ?, ?)",
+                    [vouchers[0].id, customer_id, newOrderId, discountVal]
+                );
+            }
+        }
+
+        // 4. SIMPAN KE ORDER ITEMS
         const sqlItem = `INSERT INTO order_items (order_id, service_name, qty, price_satuan, subtotal) VALUES (?, ?, ?, ?, ?)`;
         for (const item of layananTerpilih) {
             await connection.execute(sqlItem, [
@@ -66,7 +85,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?)`;
             ]);
         }
 
-        // 4. REQUEST KE LINKQU
+        // 5. REQUEST KE LINKQU (Gunakan total_akhir yang sudah dipotong diskon)
         const payload = {
             amount: rincian_biaya.total_akhir,
             partner_reff: partner_reff,
@@ -84,7 +103,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?)`;
             throw new Error(linkquRes.data?.message || "Gagal mendapatkan respon dari LinkQu");
         }
 
-        // 5. SIMPAN KE PAYMENTS
+        // 6. SIMPAN KE PAYMENTS
         const sqlPayment = `INSERT INTO payments 
             (order_id, customer_id, payment_method, transaction_id, gross_amount, payment_status, payment_type, expired_at, payment_details) 
             VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)`;
@@ -98,7 +117,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?)`;
         ]);
 
         await connection.commit();
-        console.log("DEBUG: Transaction Committed. Order is currently 'unpaid'.");
+        console.log("DEBUG: Transaction Committed with Discount applied.");
 
         res.json({
             success: true,
@@ -114,8 +133,8 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?)`;
 
     } catch (err) {
         if (connection) await connection.rollback();
-        console.error("!!! BACKEND CRASH ERROR !!!", err.message);
-        res.status(500).json({ success: false, message: "Internal Server Error" });
+        console.error("!!! BACKEND ERROR !!!", err.message);
+        res.status(500).json({ success: false, message: err.message || "Internal Server Error" });
     } finally {
         connection.release();
     }
