@@ -9,6 +9,7 @@ const { sendPushNotification } = require('../services/notificationService');
 const releaseFundsToMitra = async (connection, orderId) => {
     console.log(`[DEBUG] === Memulai Proses Pencairan Dana Order #${orderId} ===`);
 
+    // 1. Cek duplikasi transaksi
     const [existingTx] = await connection.execute(
         "SELECT id FROM wallet_transactions WHERE description LIKE ?",
         [`%Order #${orderId}%`]
@@ -19,8 +20,9 @@ const releaseFundsToMitra = async (connection, orderId) => {
         return false;
     }
 
+    // 2. Ambil data order lengkap termasuk platform_fee dan service_fee awal
     const [order] = await connection.execute(
-        `SELECT o.total_price, o.discount_amount, s.user_id as mitra_user_id 
+        `SELECT o.total_price, o.discount_amount, o.platform_fee, o.service_fee, s.user_id as mitra_user_id 
          FROM orders o 
          JOIN stores s ON o.store_id = s.id 
          WHERE o.id = ?`, [orderId]
@@ -31,22 +33,43 @@ const releaseFundsToMitra = async (connection, orderId) => {
         return false;
     }
 
-    const { total_price, discount_amount, mitra_user_id } = order[0];
+    const { 
+        total_price, 
+        discount_amount, 
+        platform_fee, 
+        service_fee, 
+        mitra_user_id 
+    } = order[0];
 
+    // --- LOGIKA PERHITUNGAN BARU ---
     const paidByCustomer = parseFloat(total_price) || 0;
     const discountVal = parseFloat(discount_amount) || 0;
-    const grossOriginal = paidByCustomer + discountVal;
+    const pFeeAwal = parseFloat(platform_fee) || 0;
+    const sFeeAwal = parseFloat(service_fee) || 0;
 
-    const netAmount = Math.floor(grossOriginal * 0.7);
-    const platformFeeAmount = paidByCustomer - netAmount;
+    // Harga Jasa Murni = (Total Bayar + Diskon) - (Semua Biaya Admin/Layanan)
+    // Kita kembalikan nilai diskon ke total kotor agar mitra tidak rugi karena voucher platform
+    const grossOriginal = paidByCustomer + discountVal; 
+    const pureServiceValue = grossOriginal - pFeeAwal - sFeeAwal;
 
-    console.log(`[DEBUG] Perhitungan Bagi Hasil:
-    - Paid by Customer : Rp${paidByCustomer.toLocaleString()}
-    - Discount Used    : Rp${discountVal.toLocaleString()}
-    - Gross Original   : Rp${grossOriginal.toLocaleString()}
-    - Net to Mitra (70%): Rp${netAmount.toLocaleString()}
-    - Final Platform Fee: Rp${platformFeeAmount.toLocaleString()}`);
+    // Mitra mendapatkan 70% dari Harga Jasa Murni
+    const netAmount = Math.floor(pureServiceValue * 0.7);
 
+    // Total pendapatan aplikasi: (pFeeAwal + sFeeAwal) + (30% dari pureServiceValue) - discountVal (jika platform menanggung diskon)
+    // Namun kita tidak melakukan UPDATE ke platform_fee agar nilai record tetap asli.
+
+    console.log(`[DEBUG] Rincian Dana Order #${orderId}:
+    - Paid by Customer      : Rp${paidByCustomer.toLocaleString()}
+    - Discount Applied      : Rp${discountVal.toLocaleString()}
+    - Platform Fee (Awal)   : Rp${pFeeAwal.toLocaleString()}
+    - Service Fee (Awal)    : Rp${sFeeAwal.toLocaleString()}
+    --------------------------------------------------
+    - Gross Original        : Rp${grossOriginal.toLocaleString()}
+    - Pure Service Value    : Rp${pureServiceValue.toLocaleString()} (Dasar Bagi Hasil)
+    - Net to Mitra (70%)    : Rp${netAmount.toLocaleString()}
+    --------------------------------------------------`);
+
+    // 3. Update atau Buat Wallet Mitra
     const [walletCheck] = await connection.execute(
         "SELECT id FROM wallets WHERE user_id = ?", [mitra_user_id]
     );
@@ -68,15 +91,13 @@ const releaseFundsToMitra = async (connection, orderId) => {
         walletId = walletCheck[0].id;
     }
 
+    // 4. Catat Transaksi Wallet
     await connection.execute(
         "INSERT INTO wallet_transactions (wallet_id, amount, type, description) VALUES (?, ?, 'credit', ?)",
-        [walletId, netAmount, `Penghasilan Order #${orderId} (70% dari Rp${grossOriginal.toLocaleString()})`]
+        [walletId, netAmount, `Penghasilan Order #${orderId} (70% dari jasa Rp${pureServiceValue.toLocaleString()})`]
     );
 
-    await connection.execute(
-        "UPDATE orders SET platform_fee = ? WHERE id = ?",
-        [platformFeeAmount, orderId]
-    );
+    // 5. SELESAI: Kita TIDAK melakukan UPDATE ke orders SET platform_fee agar nilai tetap asli sesuai awal order.
 
     console.log(`[DEBUG] === Pencairan Dana Selesai untuk Order #${orderId} ===`);
     return netAmount;
