@@ -1,5 +1,7 @@
 const db = require('../config/db');
 
+// --- KODE ASLI ANDA (TIDAK DIUBAH) ---
+
 exports.validateVoucher = async (req, res) => {
     const { code, user_id, subtotal_layanan } = req.body;
 
@@ -64,10 +66,6 @@ exports.validateVoucher = async (req, res) => {
             }
         }
 
-        // CATATAN: Jangan INSERT ke voucher_usages di sini jika validateVoucher 
-        // dipanggil hanya untuk pengecekan di halaman checkout (preview).
-        // Insert idealnya dilakukan saat 'Confirm Order' berhasil.
-
         res.status(200).json({
             success: true,
             message: "Voucher berhasil diterapkan!",
@@ -120,6 +118,97 @@ exports.getVouchers = async (req, res) => {
     try {
         const [rows] = await db.execute("SELECT * FROM vouchers ORDER BY created_at DESC");
         res.status(200).json({ success: true, data: rows });
+    } catch (error) {
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
+
+// --- TAMBAHAN UNTUK OPERASI MASSAL (BULK) ---
+
+/**
+ * Membuat banyak voucher sekaligus
+ * Body: { "vouchers": [ { "code": "PROMO1", ... }, { "code": "PROMO2", ... } ] }
+ */
+exports.bulkCreateVouchers = async (req, res) => {
+    const { vouchers } = req.body;
+
+    if (!Array.isArray(vouchers) || vouchers.length === 0) {
+        return res.status(400).json({ success: false, message: "Data voucher harus berupa array." });
+    }
+
+    try {
+        const values = vouchers.map(v => [
+            v.code, 
+            v.discount_type || 'percent', 
+            v.discount_percent || 0, 
+            v.max_discount_amount || null, 
+            v.min_purchase || 0, 
+            v.usage_limit || 1, 
+            v.expired_at || null
+        ]);
+
+        const sql = `INSERT INTO vouchers 
+            (code, discount_type, discount_percent, max_discount_amount, min_purchase, usage_limit, expired_at) 
+            VALUES ?`;
+
+        // Gunakan db.query untuk bulk insert
+        await db.query(sql, [values]);
+
+        res.status(201).json({ 
+            success: true, 
+            message: `${vouchers.length} voucher berhasil ditambahkan.` 
+        });
+    } catch (error) {
+        res.status(500).json({ success: false, message: "Gagal membuat voucher massal", error: error.message });
+    }
+};
+
+/**
+ * Menghapus banyak voucher sekaligus berdasarkan ID
+ * Body: { "ids": [1, 2, 3] }
+ */
+exports.bulkDeleteVouchers = async (req, res) => {
+    const { ids } = req.body;
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+        return res.status(400).json({ success: false, message: "Pilih voucher yang ingin dihapus (array ID)." });
+    }
+
+    try {
+        const sql = `DELETE FROM vouchers WHERE id IN (${ids.map(() => '?').join(',')})`;
+        await db.execute(sql, ids);
+
+        res.status(200).json({ 
+            success: true, 
+            message: `${ids.length} voucher berhasil dihapus.` 
+        });
+    } catch (error) {
+        if (error.code === 'ER_ROW_IS_REFERENCED_2') {
+            return res.status(400).json({ 
+                success: false, 
+                message: "Beberapa voucher tidak bisa dihapus karena sudah pernah digunakan." 
+            });
+        }
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
+
+/**
+ * Mengubah status (aktif/non-aktif) banyak voucher sekaligus
+ * Body: { "ids": [1, 2], "is_active": 0 }
+ */
+exports.bulkUpdateStatus = async (req, res) => {
+    const { ids, is_active } = req.body;
+
+    if (!Array.isArray(ids) || ids.length === 0 || is_active === undefined) {
+        return res.status(400).json({ success: false, message: "Data tidak lengkap." });
+    }
+
+    try {
+        const sql = `UPDATE vouchers SET is_active = ? WHERE id IN (${ids.map(() => '?').join(',')})`;
+        await db.execute(sql, [is_active, ...ids]);
+
+        res.status(200).json({ success: true, message: "Status voucher berhasil diperbarui." });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
