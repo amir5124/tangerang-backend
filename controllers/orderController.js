@@ -328,6 +328,7 @@ exports.getAllOrdersAdmin = async (req, res) => {
             SELECT 
                 o.id, 
                 o.status, 
+                o.notes AS customer_notes, 
                 o.total_price, 
                 o.platform_fee,
                 o.service_fee,
