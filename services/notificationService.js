@@ -1,10 +1,14 @@
-const admin = require('../config/firebaseConfig');
-
 exports.sendPushNotification = async (targetToken, title, body, data = {}) => {
     if (!targetToken) {
         console.log("⚠️ Skip sending notification: No FCM Token found.");
         return;
     }
+
+    // Pastikan semua value di dalam data adalah STRING
+    const stringData = Object.keys(data).reduce((acc, key) => {
+        acc[key] = String(data[key]);
+        return acc;
+    }, {});
 
     const message = {
         token: targetToken,
@@ -12,21 +16,21 @@ exports.sendPushNotification = async (targetToken, title, body, data = {}) => {
             title: title,
             body: body,
         },
-        data: data,
-        // Tambahkan konfigurasi Android agar berbunyi
+        data: stringData, // Menggunakan data yang sudah diconvert ke string
         android: {
-            priority: "high", // Penting agar muncul seketika
+            priority: "high",
             notification: {
                 sound: "default",
-                channelId: "orders", // Harus sama dengan di React Native
+                channelId: "orders", // Pastikan channel 'orders' sudah dibuat di React Native
                 priority: "high",
+                clickAction: "TOP_STORY_ACTIVITY", // Opsional: membantu beberapa OS Android
             },
         },
-        // Tambahkan konfigurasi iOS agar berbunyi
         apns: {
             payload: {
                 aps: {
                     sound: "default",
+                    contentAvailable: true,
                 },
             },
         },

@@ -65,14 +65,15 @@ exports.register = async (req, res) => {
             );
 
             if (admins.length > 0) {
-                const title = "Pengguna Baru Berhasil Daftar 👤";
+                const title = "Pengguna Baru Berhasil Daftar";
                 const body = `User baru ${full_name} (${role}) telah bergabung.`;
 
                 for (const admin of admins) {
                     await sendPushNotification(admin.fcm_token, title, body, {
                         type: "NEW_USER_REGISTERED",
                         userId: String(userId),
-                        role: role
+                        role: role,
+                        screen: "/(tabs)/profile",
                     });
                 }
             }
