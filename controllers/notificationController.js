@@ -27,8 +27,8 @@ exports.sendTopicBroadcast = async (req, res) => {
         android: {
             priority: "high",
             notification: {
-                channelId: "default", // <--- SESUAIKAN DENGAN FRONTEND
-                clickAction: "TOP_STORY_ACTIVITY", // Membantu trigger open app
+                channelId: "default", 
+                clickAction: "TOP_STORY_ACTIVITY", 
                 sound: "default"
             }
         },
@@ -39,7 +39,7 @@ exports.sendTopicBroadcast = async (req, res) => {
                 icon: "https://res.cloudinary.com/dgsdmgcc7/image/upload/v1770989052/Salinan_LOGO_TF_1-removebg-preview_ybdbz0.png", // Tambahkan icon agar muncul di Web
             },
             fcm_options: {
-                link: "https://tangerangfast.netlify.app" // Klik notif di web lari ke sini
+                link: "https://tangerangfast.netlify.app" 
             }
         },
         apns: {

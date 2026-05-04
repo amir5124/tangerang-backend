@@ -9,7 +9,7 @@ const { sendPushNotification } = require('../services/notificationService');
 const releaseFundsToMitra = async (connection, orderId) => {
     console.log(`[DEBUG] === Memulai Proses Pencairan Dana Order #${orderId} ===`);
 
-    // 1. Cek duplikasi transaksi
+    // 1. Cek duplikasi transaksi agar tidak terjadi double credit
     const [existingTx] = await connection.execute(
         "SELECT id FROM wallet_transactions WHERE description LIKE ?",
         [`%Order #${orderId}%`]
@@ -41,28 +41,29 @@ const releaseFundsToMitra = async (connection, orderId) => {
         mitra_user_id 
     } = order[0];
 
-    // --- LOGIKA PERHITUNGAN BARU ---
+    // --- LOGIKA PERHITUNGAN 70/30 (Sesuai Harapan) ---
     const paidByCustomer = parseFloat(total_price) || 0;
     const discountVal = parseFloat(discount_amount) || 0;
     const pFeeAwal = parseFloat(platform_fee) || 0;
     const sFeeAwal = parseFloat(service_fee) || 0;
 
-    // Harga Jasa Murni = (Total Bayar + Diskon) - (Semua Biaya Admin/Layanan)
-    // Kita kembalikan nilai diskon ke total kotor agar mitra tidak rugi karena voucher platform
+    /**
+     * PENJELASAN LOGIKA:
+     * 1. Gross Original: Total harga sebelum dipotong apapun (Uang Customer + Subsidi Diskon Platform).
+     * 2. Pure Service Value: Nilai jasa murni yang didapat setelah mengeluarkan biaya admin (Platform & Service Fee).
+     * 3. Net to Mitra: Mitra mendapatkan 70% murni dari Pure Service Value tersebut.
+     */
     const grossOriginal = paidByCustomer + discountVal; 
     const pureServiceValue = grossOriginal - pFeeAwal - sFeeAwal;
 
-    // Mitra mendapatkan 70% dari Harga Jasa Murni
+    // Hitung jatah mitra 70% dari nilai jasa murni
     const netAmount = Math.floor(pureServiceValue * 0.7);
-
-    // Total pendapatan aplikasi: (pFeeAwal + sFeeAwal) + (30% dari pureServiceValue) - discountVal (jika platform menanggung diskon)
-    // Namun kita tidak melakukan UPDATE ke platform_fee agar nilai record tetap asli.
 
     console.log(`[DEBUG] Rincian Dana Order #${orderId}:
     - Paid by Customer      : Rp${paidByCustomer.toLocaleString()}
     - Discount Applied      : Rp${discountVal.toLocaleString()}
-    - Platform Fee (Awal)   : Rp${pFeeAwal.toLocaleString()}
-    - Service Fee (Awal)    : Rp${sFeeAwal.toLocaleString()}
+    - Platform Fee (Awal)   : Rp${pFeeAwal.toLocaleString()} (Tidak memotong 70% Mitra)
+    - Service Fee (Awal)    : Rp${sFeeAwal.toLocaleString()} (Tidak memotong 70% Mitra)
     --------------------------------------------------
     - Gross Original        : Rp${grossOriginal.toLocaleString()}
     - Pure Service Value    : Rp${pureServiceValue.toLocaleString()} (Dasar Bagi Hasil)
@@ -91,15 +92,20 @@ const releaseFundsToMitra = async (connection, orderId) => {
         walletId = walletCheck[0].id;
     }
 
-    // 4. Catat Transaksi Wallet
+    // 4. Catat Transaksi Wallet dengan deskripsi detail
     await connection.execute(
         "INSERT INTO wallet_transactions (wallet_id, amount, type, description) VALUES (?, ?, 'credit', ?)",
-        [walletId, netAmount, `Penghasilan Order #${orderId} (70% dari jasa Rp${pureServiceValue.toLocaleString()})`]
+        [
+            walletId, 
+            netAmount, 
+            `Penghasilan Order #${orderId} (70% dari nilai jasa Rp${pureServiceValue.toLocaleString()})`
+        ]
     );
 
-    // 5. SELESAI: Kita TIDAK melakukan UPDATE ke orders SET platform_fee agar nilai tetap asli sesuai awal order.
+    // 5. SELESAI
+    // Catatan: Tidak melakukan update pada table 'orders' agar histori platform_fee tetap original.
 
-    console.log(`[DEBUG] === Pencairan Dana Selesai untuk Order #${orderId} ===`);
+    console.log(`[DEBUG] === Pencairan Dana Selesai untuk Order #${orderId}. Mitra menerima: Rp${netAmount.toLocaleString()} ===`);
     return netAmount;
 };
 
