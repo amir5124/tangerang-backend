@@ -69,12 +69,12 @@ exports.register = async (req, res) => {
                 const body = `User baru ${full_name} (${role}) telah bergabung.`;
 
                 for (const admin of admins) {
-                    await sendPushNotification(admin.fcm_token, title, body, {
-                        type: "NEW_USER_REGISTERED",
-                        userId: String(userId),
-                        role: role,
-                        screen: "/(tabs)/profile",
-                    });
+                   await sendPushNotification(admin.fcm_token, title, body, {
+    type: "NEW_USER", // Sesuaikan dengan pengecekan di frontend
+    userId: String(userId),
+    role: role,
+    screen: "/(tabs)/profile",
+});
                 }
             }
         } catch (fcmErr) {
