@@ -5,23 +5,38 @@ const { sendPushNotification } = require('../services/notificationService');
 /**
  * HELPER: Mengirim notifikasi ke semua Admin
  */
-const notifyAdmins = async (title, body, data = {}) => {
+/**
+ * HELPER: Mengirim notifikasi ke semua Admin
+ * @param {string} title - Judul Notifikasi
+ * @param {string} body - Isi Pesan
+ * @param {number|string} orderId - ID Order untuk redirect (Opsional)
+ */
+const notifyAdmins = async (title, body, orderId = null) => {
     try {
-        const [admins] = await db.execute("SELECT fcm_token FROM users WHERE role = 'admin' AND fcm_token IS NOT NULL");
+        const [admins] = await db.execute(
+            "SELECT fcm_token FROM users WHERE role = 'admin' AND fcm_token IS NOT NULL"
+        );
+
         if (admins.length > 0) {
-            console.log(`[DEBUG] [ADMIN-NOTIF] Mengirim notifikasi ke ${admins.length} admin.`);
+            console.log(`[DEBUG] [ADMIN-NOTIF] Mengirim ke ${admins.length} admin untuk Order #${orderId}`);
+            
             const tokens = admins.map(a => a.fcm_token);
-            // Mengirim ke setiap token admin
+
+            // Menyiapkan data payload agar dibaca oleh handleRedirect di Frontend
+            const dataPayload = {
+                type: "ADMIN_ORDER_ALERT",
+                // Penting: Frontend Anda mencari data.orderId untuk router.push(`/order/${data.orderId}`)
+                ...(orderId && { orderId: String(orderId) }),
+            };
+
             for (const token of tokens) {
-                sendPushNotification(token, title, body, data).catch(err => 
-                    console.error(`[DEBUG] [ADMIN-NOTIF] Gagal kirim ke salah satu admin: ${err.message}`)
+                sendPushNotification(token, title, body, dataPayload).catch(err => 
+                    console.error(`[DEBUG] [ADMIN-NOTIF] Gagal kirim ke token admin: ${err.message}`)
                 );
             }
-        } else {
-            console.log(`[DEBUG] [ADMIN-NOTIF] Tidak ada admin dengan FCM token ditemukan.`);
         }
     } catch (error) {
-        console.error(`[DEBUG] [ADMIN-NOTIF] Error fetching admins:`, error.message);
+        console.error(`[DEBUG] [ADMIN-NOTIF] Error:`, error.message);
     }
 };
 
