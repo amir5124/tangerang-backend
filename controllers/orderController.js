@@ -4,9 +4,6 @@ const { sendPushNotification } = require('../services/notificationService');
 
 /**
  * HELPER: Mengirim notifikasi ke semua Admin
- */
-/**
- * HELPER: Mengirim notifikasi ke semua Admin
  * @param {string} title - Judul Notifikasi
  * @param {string} body - Isi Pesan
  * @param {number|string} orderId - ID Order untuk redirect (Opsional)
@@ -19,7 +16,7 @@ const notifyAdmins = async (title, body, orderId = null) => {
 
         if (admins.length > 0) {
             console.log(`[DEBUG] [ADMIN-NOTIF] Mengirim ke ${admins.length} admin untuk Order #${orderId}`);
-            
+
             const tokens = admins.map(a => a.fcm_token);
 
             // Menyiapkan data payload agar dibaca oleh handleRedirect di Frontend
@@ -30,7 +27,7 @@ const notifyAdmins = async (title, body, orderId = null) => {
             };
 
             for (const token of tokens) {
-                sendPushNotification(token, title, body, dataPayload).catch(err => 
+                sendPushNotification(token, title, body, dataPayload).catch(err =>
                     console.error(`[DEBUG] [ADMIN-NOTIF] Gagal kirim ke token admin: ${err.message}`)
                 );
             }
@@ -72,26 +69,26 @@ const releaseFundsToMitra = async (connection, orderId) => {
         return false;
     }
 
-    const { 
-        total_price, 
-        discount_amount, 
-        platform_fee, 
-        service_fee, 
-        mitra_user_id 
+    const {
+        total_price,
+        discount_amount,
+        platform_fee,
+        service_fee,
+        mitra_user_id
     } = order[0];
 
     const paidByCustomer = parseFloat(total_price) || 0;
     const discountVal = parseFloat(discount_amount) || 0;
-    
+
     // LOGIKA FIX:
     // Gross Original adalah nilai asli jasa sebelum dipotong fee aplikasi.
     // Jika customer bayar 90 dan ada diskon 10, maka nilai jasanya adalah 100.
     // Maka 100 itulah yang dibagi 70/30.
-    const grossOriginal = paidByCustomer + discountVal; 
-    
+    const grossOriginal = paidByCustomer + discountVal;
+
     // Dasar bagi hasil sekarang menggunakan Gross Original penuh
-    const pureServiceValue = grossOriginal; 
-    
+    const pureServiceValue = grossOriginal;
+
     // Hitung jatah mitra 70%
     const netAmount = Math.floor(pureServiceValue * 0.7);
 
@@ -130,18 +127,18 @@ const releaseFundsToMitra = async (connection, orderId) => {
     await connection.execute(
         "INSERT INTO wallet_transactions (wallet_id, amount, type, description) VALUES (?, ?, 'credit', ?)",
         [
-            walletId, 
-            netAmount, 
+            walletId,
+            netAmount,
             `Penghasilan Order #${orderId} (70% dari nilai jasa Rp${pureServiceValue.toLocaleString()})`
         ]
     );
 
     // 5. NOTIFIKASI ADMIN: Pencairan Dana Selesai
-    // Kita panggil notifyAdmins yang sudah dibuat sebelumnya
     if (typeof notifyAdmins === 'function') {
         notifyAdmins(
-            "Pencairan Dana 💸", 
-            `Dana Order #${orderId} sebesar Rp${netAmount.toLocaleString()} telah masuk ke dompet Mitra.`
+            "Pencairan Dana 💸",
+            `Dana Order #${orderId} sebesar Rp${netAmount.toLocaleString()} telah masuk ke dompet Mitra.`,
+            orderId
         );
     }
 
@@ -231,11 +228,11 @@ exports.createOrder = async (req, res) => {
         await connection.commit();
 
         // NOTIFIKASI ADMIN: Order Baru Terbuat
-        notifyAdmins("Pesanan Baru 🛒", `Order #${newOrderId} telah dibuat oleh pelanggan. Status: UNPAID. Total: Rp${finalTotalPrice.toLocaleString()}`, { orderId: String(newOrderId) });
+        notifyAdmins("Pesanan Baru 🛒", `Order #${newOrderId} telah dibuat. Status: UNPAID. Total: Rp${finalTotalPrice.toLocaleString()}`, newOrderId);
 
-        res.status(201).json({ 
-            success: true, 
-            message: "Pesanan berhasil dibuat", 
+        res.status(201).json({
+            success: true,
+            message: "Pesanan berhasil dibuat",
             order_id: newOrderId,
             rincian_pembayaran: {
                 subtotal_awal: rincian_biaya.total_akhir,
@@ -322,10 +319,10 @@ exports.cancelOrder = async (req, res) => {
             WHERE id = ? AND status IN ('pending', 'unpaid')
         `;
         const [result] = await db.execute(sql, [reason, orderId]);
-        
+
         if (result.affectedRows > 0) {
             // NOTIFIKASI ADMIN: Pembatalan oleh Customer
-            notifyAdmins("Pesanan Dibatalkan ⚠️", `Order #${orderId} telah dibatalkan oleh Pelanggan. Alasan: ${reason || '-'}`);
+            notifyAdmins("Pesanan Dibatalkan ⚠️", `Order #${orderId} dibatalkan Pelanggan. Alasan: ${reason || '-'}`, orderId);
             res.json({ success: true, message: 'Pesanan berhasil dibatalkan' });
         } else {
             res.status(400).json({ success: false, message: 'Pesanan tidak dapat dibatalkan' });
@@ -436,7 +433,7 @@ exports.updateOrderStatus = async (req, res) => {
         await connection.commit();
 
         // NOTIFIKASI ADMIN: Perubahan Status oleh Mitra
-        notifyAdmins("Update Status Order 🛠️", `Order #${id} diupdate ke ${statusToSave} oleh Mitra. ${notes ? 'Alasan: ' + notes : ''}`);
+        notifyAdmins("Update Status Order 🛠️", `Order #${id} diupdate ke ${statusToSave} oleh Mitra.`, id);
 
         res.status(200).json({
             success: true,
@@ -454,7 +451,7 @@ exports.updateOrderStatus = async (req, res) => {
             };
             const title = status === 'cancelled' ? "Pesanan Dibatalkan ❌" : "Update Pesanan 🔔";
             const body = `Halo ${customerName}, pesanan Anda ${statusMap[status] || status}`;
-            sendPushNotification(customerFcm, title, body, { orderId: String(id), type: "ORDER_STATUS_UPDATE", status: String(statusToSave) }).catch(e => {});
+            sendPushNotification(customerFcm, title, body, { orderId: String(id), type: "ORDER_STATUS_UPDATE", status: String(statusToSave) }).catch(e => { });
         }
 
     } catch (error) {
@@ -499,15 +496,15 @@ exports.customerCompleteOrder = async (req, res) => {
 
         if (updateResult.affectedRows > 0) {
             const amountCair = await releaseFundsToMitra(connection, id);
-            
+
             // NOTIFIKASI ADMIN: Order Selesai Sempurna
-            notifyAdmins("Order Selesai ✅", `Pelanggan telah mengkonfirmasi penyelesaian Order #${id}. Rating: ${rating}⭐`);
+            notifyAdmins("Order Selesai ✅", `Pelanggan telah mengkonfirmasi penyelesaian Order #${id}. Rating: ${rating}⭐`, id);
 
             if (amountCair) {
                 const [mitra] = await connection.execute(`SELECT u.fcm_token FROM stores s JOIN users u ON s.user_id = u.id WHERE s.id = ?`, [store_id]);
                 if (mitra[0]?.fcm_token) {
                     const formatted = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(amountCair);
-                    sendPushNotification(mitra[0].fcm_token, "Dana Masuk! 💰", `Selamat! Pendapatan ${formatted} dari Order #${id} masuk ke dompet.`, { type: 'WALLET_UPDATE', orderId: String(id) }).catch(e => {});
+                    sendPushNotification(mitra[0].fcm_token, "Dana Masuk! 💰", `Selamat! Pendapatan ${formatted} dari Order #${id} masuk ke dompet.`, { type: 'WALLET_UPDATE', orderId: String(id) }).catch(e => { });
                 }
             }
         }
