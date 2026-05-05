@@ -25,12 +25,15 @@ const notifyAdmins = async (title, body, data = {}) => {
     }
 };
 
+
 /**
  * HELPER: Fungsi Internal untuk Pencairan Dana
+ * FIX: Dasar bagi hasil adalah Gross Original (Total + Diskon) tanpa dikurangi fee app.
  */
 const releaseFundsToMitra = async (connection, orderId) => {
     console.log(`[DEBUG] === Memulai Proses Pencairan Dana Order #${orderId} ===`);
 
+    // 1. Cek duplikasi transaksi
     const [existingTx] = await connection.execute(
         "SELECT id FROM wallet_transactions WHERE description LIKE ?",
         [`%Order #${orderId}%`]
@@ -41,6 +44,7 @@ const releaseFundsToMitra = async (connection, orderId) => {
         return false;
     }
 
+    // 2. Ambil data order
     const [order] = await connection.execute(
         `SELECT o.total_price, o.discount_amount, o.platform_fee, o.service_fee, s.user_id as mitra_user_id 
          FROM orders o 
@@ -63,30 +67,43 @@ const releaseFundsToMitra = async (connection, orderId) => {
 
     const paidByCustomer = parseFloat(total_price) || 0;
     const discountVal = parseFloat(discount_amount) || 0;
-    const pFeeAwal = parseFloat(platform_fee) || 0;
-    const sFeeAwal = parseFloat(service_fee) || 0;
-
+    
+    // LOGIKA FIX:
+    // Gross Original adalah nilai asli jasa sebelum dipotong fee aplikasi.
+    // Jika customer bayar 90 dan ada diskon 10, maka nilai jasanya adalah 100.
+    // Maka 100 itulah yang dibagi 70/30.
     const grossOriginal = paidByCustomer + discountVal; 
-    const pureServiceValue = grossOriginal - pFeeAwal - sFeeAwal;
+    
+    // Dasar bagi hasil sekarang menggunakan Gross Original penuh
+    const pureServiceValue = grossOriginal; 
+    
+    // Hitung jatah mitra 70%
     const netAmount = Math.floor(pureServiceValue * 0.7);
 
     console.log(`[DEBUG] Rincian Dana Order #${orderId}:
-    - Gross Original         : Rp${grossOriginal.toLocaleString()}
-    - Pure Service Value    : Rp${pureServiceValue.toLocaleString()}
-    - Net to Mitra (70%)    : Rp${netAmount.toLocaleString()}`);
+    - Paid by Customer      : Rp${paidByCustomer.toLocaleString()}
+    - Discount Applied      : Rp${discountVal.toLocaleString()}
+    --------------------------------------------------
+    - Gross Original        : Rp${grossOriginal.toLocaleString()} (Dasar Bagi Hasil)
+    - Net to Mitra (70%)    : Rp${netAmount.toLocaleString()}
+    - Profit App (Admin)    : Rp${(grossOriginal - netAmount).toLocaleString()} (Termasuk pFee & sFee)
+    --------------------------------------------------`);
 
+    // 3. Update atau Buat Wallet Mitra
     const [walletCheck] = await connection.execute(
         "SELECT id FROM wallets WHERE user_id = ?", [mitra_user_id]
     );
 
     let walletId;
     if (walletCheck.length === 0) {
+        console.log(`[DEBUG] Pembuatan wallet baru untuk Mitra UID: ${mitra_user_id}`);
         const [insertWallet] = await connection.execute(
             "INSERT INTO wallets (user_id, balance) VALUES (?, ?)",
             [mitra_user_id, netAmount]
         );
         walletId = insertWallet.insertId;
     } else {
+        console.log(`[DEBUG] Update saldo wallet ID: ${walletCheck[0].id}`);
         await connection.execute(
             "UPDATE wallets SET balance = balance + ? WHERE user_id = ?",
             [netAmount, mitra_user_id]
@@ -94,15 +111,26 @@ const releaseFundsToMitra = async (connection, orderId) => {
         walletId = walletCheck[0].id;
     }
 
+    // 4. Catat Transaksi Wallet
     await connection.execute(
         "INSERT INTO wallet_transactions (wallet_id, amount, type, description) VALUES (?, ?, 'credit', ?)",
-        [walletId, netAmount, `Penghasilan Order #${orderId} (70% dari nilai jasa Rp${pureServiceValue.toLocaleString()})`]
+        [
+            walletId, 
+            netAmount, 
+            `Penghasilan Order #${orderId} (70% dari nilai jasa Rp${pureServiceValue.toLocaleString()})`
+        ]
     );
 
-    // NOTIFIKASI ADMIN: Pencairan Dana Selesai
-    notifyAdmins("Pencairan Dana 💸", `Dana Order #${orderId} sebesar Rp${netAmount.toLocaleString()} telah diteruskan ke dompet Mitra.`);
+    // 5. NOTIFIKASI ADMIN: Pencairan Dana Selesai
+    // Kita panggil notifyAdmins yang sudah dibuat sebelumnya
+    if (typeof notifyAdmins === 'function') {
+        notifyAdmins(
+            "Pencairan Dana 💸", 
+            `Dana Order #${orderId} sebesar Rp${netAmount.toLocaleString()} telah masuk ke dompet Mitra.`
+        );
+    }
 
-    console.log(`[DEBUG] === Pencairan Dana Selesai untuk Order #${orderId} ===`);
+    console.log(`[DEBUG] === Pencairan Dana Selesai untuk Order #${orderId}. Mitra menerima: Rp${netAmount.toLocaleString()} ===`);
     return netAmount;
 };
 
