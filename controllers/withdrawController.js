@@ -391,10 +391,11 @@ exports.handleWithdrawCallback = async (req, res) => {
 exports.getHistoryByUser = async (req, res) => {
     const { user_id } = req.params;
     try {
+        // Mengubah 'inquiry' menjadi 'inquiries' sesuai nama tabel yang benar
         const [rows] = await db.query(
             `SELECT t.*, i.* 
              FROM transfers t 
-             LEFT JOIN inquiry i ON t.inquiry_id = i.id 
+             LEFT JOIN inquiries i ON t.inquiry_id = i.id 
              WHERE t.user_id = ? 
              ORDER BY t.created_at DESC`,
             [user_id]
