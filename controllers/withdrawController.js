@@ -392,9 +392,14 @@ exports.getHistoryByUser = async (req, res) => {
     const { user_id } = req.params;
     try {
         const [rows] = await db.query(
-            'SELECT * FROM transfers WHERE user_id = ? ORDER BY created_at DESC',
+            `SELECT t.*, i.* 
+             FROM transfers t 
+             LEFT JOIN inquiry i ON t.inquiry_id = i.id 
+             WHERE t.user_id = ? 
+             ORDER BY t.created_at DESC`,
             [user_id]
         );
+        
         res.json({ success: true, data: rows });
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
