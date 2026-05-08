@@ -391,11 +391,10 @@ exports.handleWithdrawCallback = async (req, res) => {
 exports.getHistoryByUser = async (req, res) => {
     const { user_id } = req.params;
     try {
-        // Mengubah 'inquiry' menjadi 'inquiries' sesuai nama tabel yang benar
         const [rows] = await db.query(
             `SELECT t.*, i.* 
              FROM transfers t 
-             LEFT JOIN inquiries i ON t.inquiry_id = i.id 
+             LEFT JOIN inquiries i ON t.inquiry_reff = i.inquiry_reff 
              WHERE t.user_id = ? 
              ORDER BY t.created_at DESC`,
             [user_id]
@@ -403,6 +402,8 @@ exports.getHistoryByUser = async (req, res) => {
         
         res.json({ success: true, data: rows });
     } catch (error) {
+        // Log error di server agar lebih mudah dilacak
+        console.error("❌ SQL Error in getHistoryByUser:", error.message);
         res.status(500).json({ success: false, message: error.message });
     }
 };
