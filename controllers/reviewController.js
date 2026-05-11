@@ -237,7 +237,7 @@ const getAllLatestReviews = async (req, res) => {
                 r.created_at,
                 u.full_name,
                 u.profile_picture,
-                s.name                  AS store_name
+                s.store_name            
             FROM reviews r
             LEFT JOIN users u  ON r.customer_id = u.id
             LEFT JOIN stores s ON r.store_id = s.id
@@ -251,7 +251,11 @@ const getAllLatestReviews = async (req, res) => {
         });
     } catch (error) {
         console.error('[getAllLatestReviews] ❌', error.message);
-        res.status(500).json({ success: false, message: error.message });
+        res.status(500).json({
+            success: false,
+            message: "Gagal mengambil ulasan terbaru",
+            error: error.message
+        });
     }
 };
 
