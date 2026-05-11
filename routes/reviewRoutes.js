@@ -9,6 +9,8 @@ const {
     getAllLatestReviews
 } = require('../controllers/reviewController');
 
+router.get('/latest-all', getAllLatestReviews);
+
 // GET    /api/reviews/store/:store_id   → Ringkasan + komentar terbaru toko
 router.get('/store/:store_id', getReviewSummary);
 
@@ -23,6 +25,6 @@ router.put('/:review_id', updateReview);
 
 // DELETE /api/reviews/:review_id        → Hapus review
 router.delete('/:review_id', deleteReview);
-router.get('/latest-all', getAllLatestReviews);
+
 
 module.exports = router;
