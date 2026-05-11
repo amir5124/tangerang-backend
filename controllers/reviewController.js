@@ -102,7 +102,7 @@ const createReview = async (req, res) => {
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         `, [
             store_id, order_id, customer_id, rating,
-            rating_quality     ?? 5,
+            rating_quality ?? 5,
             rating_punctuality ?? 5,
             rating_communication ?? 5,
             comment || null
@@ -149,9 +149,9 @@ const updateReview = async (req, res) => {
             WHERE id = ?
         `, [
             rating,
-            rating_quality        ?? 5,
-            rating_punctuality    ?? 5,
-            rating_communication  ?? 5,
+            rating_quality ?? 5,
+            rating_punctuality ?? 5,
+            rating_communication ?? 5,
             comment || null,
             review_id
         ]);
@@ -227,10 +227,39 @@ const getReviewById = async (req, res) => {
     }
 };
 
+const getAllLatestReviews = async (req, res) => {
+    try {
+        const [comments] = await db.execute(`
+            SELECT
+                r.id                    AS review_id,
+                r.rating,
+                r.comment,
+                r.created_at,
+                u.full_name,
+                u.profile_picture,
+                s.name                  AS store_name
+            FROM reviews r
+            LEFT JOIN users u  ON r.customer_id = u.id
+            LEFT JOIN stores s ON r.store_id = s.id
+            ORDER BY r.created_at DESC
+            LIMIT 10
+        `);
+
+        res.status(200).json({
+            success: true,
+            latest_comments: comments
+        });
+    } catch (error) {
+        console.error('[getAllLatestReviews] ❌', error.message);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
 module.exports = {
     getReviewSummary,
     createReview,
     updateReview,
     deleteReview,
-    getReviewById
+    getReviewById,
+    getAllLatestReviews
 };
