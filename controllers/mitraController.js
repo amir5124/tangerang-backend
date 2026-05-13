@@ -14,7 +14,7 @@ exports.getMitraDashboard = async (req, res) => {
             IFNULL((SELECT balance FROM wallets WHERE user_id = s.user_id LIMIT 1), 0) as balance,
             
             -- Total Pendapatan yang SUDAH CAIR (70% dari order completed)
-            IFNULL((SELECT SUM(FLOOR(o2.total_price * (IFNULL(s.commission_rate, 70) / 100))) 
+IFNULL((SELECT SUM(FLOOR((o2.total_price + IFNULL(o2.discount_amount, 0)) * (IFNULL(s.commission_rate, 70) / 100))) 
         FROM orders o2 WHERE o2.store_id = s.id AND o2.status = 'completed'), 0) as revenue,
             
             -- Pekerjaan Selesai (Hanya yang sudah dikonfirmasi Customer)

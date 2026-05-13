@@ -99,28 +99,33 @@ const releaseFundsToMitra = async (connection, orderId) => {
 
     const paidByCustomer = parseFloat(total_price) || 0;
     const discountVal = parseFloat(discount_amount) || 0;
-
-    // Gunakan parseCommission() agar "70.00" → 70, tidak ada mismatch tipe
     const commissionPct = parseCommission(commission_rate);
 
-    // Gross original = nilai jasa sebelum voucher dipotong
+    // Gross original = nilai jasa asli sebelum voucher → dasar bagi hasil mitra
+    // Mitra tetap dapat % penuh dari nilai asli, voucher ditanggung aplikator
     const grossOriginal = paidByCustomer + discountVal;
 
-    // Bagi hasil DINAMIS — Math.floor memastikan tidak ada pecahan rupiah ke mitra
+    // Mitra dapat % dari nilai asli (grossOriginal), bukan dari yang customer bayar
     const netAmount = Math.floor(grossOriginal * (commissionPct / 100));
-    // appProfit dihitung dari sisa agar total selalu = grossOriginal (anti floating point gap)
-    const appProfit = grossOriginal - netAmount;
+
+    // ✅ FIX: appProfit = kas yang masuk (paidByCustomer) - yang keluar ke mitra (netAmount)
+    // Voucher sudah otomatis memotong bagian aplikator karena kas masuk hanya 90rb
+    // tapi keluar ke mitra 60rb → aplikator bersih 30rb (sudah menanggung voucher 10rb)
+    const appProfitBersih = paidByCustomer - netAmount;
+    const appProfitKotor = grossOriginal - netAmount; // 40% dari nilai asli, untuk info saja
     const appPct = parseFloat((100 - commissionPct).toFixed(2));
 
     console.log(`[DEBUG] Rincian Dana Order #${orderId}:
     - Toko                  : ${store_name}
-    - Paid by Customer      : Rp${paidByCustomer.toLocaleString('id-ID')}
-    - Discount Applied      : Rp${discountVal.toLocaleString('id-ID')}
+    - Nilai Jasa Asli       : Rp${grossOriginal.toLocaleString('id-ID')} (dasar bagi hasil)
+    - Voucher (beban app)   : Rp${discountVal.toLocaleString('id-ID')}
+    - Customer Bayar        : Rp${paidByCustomer.toLocaleString('id-ID')}
     --------------------------------------------------
-    - Gross Original        : Rp${grossOriginal.toLocaleString('id-ID')} (Dasar Bagi Hasil)
     - Komisi Mitra          : ${commissionPct}%
     - Net to Mitra          : Rp${netAmount.toLocaleString('id-ID')}
-    - Profit App (Admin)    : Rp${appProfit.toLocaleString('id-ID')} (${appPct}%)
+    - Profit App ${appPct}% (kotor)  : Rp${appProfitKotor.toLocaleString('id-ID')}
+    - Voucher ditanggung app: Rp${discountVal.toLocaleString('id-ID')}
+    - Profit App (bersih)   : Rp${appProfitBersih.toLocaleString('id-ID')}
     --------------------------------------------------`);
 
     // 3. Update atau Buat Wallet Mitra
