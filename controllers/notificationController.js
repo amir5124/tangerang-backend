@@ -36,7 +36,7 @@ const sendTopicBroadcast = async (req, res) => {
                 icon: "https://res.cloudinary.com/dgsdmgcc7/image/upload/v1770989052/Salinan_LOGO_TF_1-removebg-preview_ybdbz0.png",
             },
             fcm_options: {
-                link: "https://tangerangfast.netlify.app"
+                link: "https://app.tangerangfast.com"
             }
         },
         apns: {

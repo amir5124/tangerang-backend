@@ -8,9 +8,9 @@ exports.validateVoucher = async (req, res) => {
     const { code, user_id, subtotal_layanan } = req.body;
 
     if (!code || !user_id) {
-        return res.status(400).json({ 
-            success: false, 
-            message: "Data tidak lengkap (kode atau user_id kosong)." 
+        return res.status(400).json({
+            success: false,
+            message: "Data tidak lengkap (kode atau user_id kosong)."
         });
     }
 
@@ -22,9 +22,9 @@ exports.validateVoucher = async (req, res) => {
         );
 
         if (vouchers.length === 0) {
-            return res.status(404).json({ 
-                success: false, 
-                message: "Kode voucher tidak ditemukan atau sudah kedaluwarsa." 
+            return res.status(404).json({
+                success: false,
+                message: "Kode voucher tidak ditemukan atau sudah kedaluwarsa."
             });
         }
 
@@ -40,9 +40,9 @@ exports.validateVoucher = async (req, res) => {
         const limit = v.usage_limit || 1;
 
         if (totalUsed >= limit) {
-            return res.status(400).json({ 
-                success: false, 
-                message: `Anda sudah mencapai batas maksimal penggunaan voucher ini (${limit}x).` 
+            return res.status(400).json({
+                success: false,
+                message: `Anda sudah mencapai batas maksimal penggunaan voucher ini (${limit}x).`
             });
         }
 
@@ -106,21 +106,23 @@ exports.getVouchers = async (req, res) => {
  */
 exports.updateVoucher = async (req, res) => {
     const { id } = req.params;
-    const { 
-        is_active, expired_at, min_purchase, code, 
-        max_discount_amount, usage_limit, description, image_url 
+    const {
+        is_active, expired_at, min_purchase, code,
+        max_discount_amount, usage_limit, description,
+        image_url, discount_percent               // ← tambah ini
     } = req.body;
 
     try {
         const [rows] = await db.execute("SELECT * FROM vouchers WHERE id = ?", [id]);
         if (rows.length === 0) return res.status(404).json({ success: false, message: "Voucher tidak ditemukan" });
-        
+
         const oldData = rows[0];
 
         const updateData = {
             code: code !== undefined ? code : oldData.code,
             description: description !== undefined ? description : oldData.description,
             image_url: image_url !== undefined ? image_url : oldData.image_url,
+            discount_percent: discount_percent !== undefined ? discount_percent : oldData.discount_percent, // ← tambah
             is_active: is_active !== undefined ? is_active : oldData.is_active,
             usage_limit: usage_limit !== undefined ? usage_limit : oldData.usage_limit,
             expired_at: expired_at !== undefined ? expired_at : oldData.expired_at,
@@ -130,12 +132,14 @@ exports.updateVoucher = async (req, res) => {
 
         await db.execute(
             `UPDATE vouchers SET 
-            code = ?, description = ?, image_url = ?, is_active = ?, usage_limit = ?, 
-            expired_at = ?, min_purchase = ?, max_discount_amount = ? 
+                code = ?, description = ?, image_url = ?, discount_percent = ?,
+                is_active = ?, usage_limit = ?, expired_at = ?, 
+                min_purchase = ?, max_discount_amount = ? 
             WHERE id = ?`,
             [
-                updateData.code, updateData.description, updateData.image_url, 
-                updateData.is_active, updateData.usage_limit, updateData.expired_at, 
+                updateData.code, updateData.description, updateData.image_url,
+                updateData.discount_percent,                                    // ← tambah
+                updateData.is_active, updateData.usage_limit, updateData.expired_at,
                 updateData.min_purchase, updateData.max_discount_amount, id
             ]
         );
@@ -159,14 +163,14 @@ exports.bulkCreateVouchers = async (req, res) => {
     try {
         // Menambahkan description dan image_url ke dalam urutan kolom yang akan di-insert
         const values = vouchers.map(v => [
-            v.code, 
+            v.code,
             v.description || null,
             v.image_url || null,
-            v.discount_type || 'percent', 
-            v.discount_percent || 0, 
-            v.max_discount_amount || null, 
-            v.min_purchase || 0, 
-            v.usage_limit || 1, 
+            v.discount_type || 'percent',
+            v.discount_percent || 0,
+            v.max_discount_amount || null,
+            v.min_purchase || 0,
+            v.usage_limit || 1,
             v.expired_at || null
         ]);
 
@@ -176,9 +180,9 @@ exports.bulkCreateVouchers = async (req, res) => {
 
         await db.query(sql, [values]);
 
-        res.status(201).json({ 
-            success: true, 
-            message: `${vouchers.length} voucher berhasil ditambahkan.` 
+        res.status(201).json({
+            success: true,
+            message: `${vouchers.length} voucher berhasil ditambahkan.`
         });
     } catch (error) {
         res.status(500).json({ success: false, message: "Gagal membuat voucher massal", error: error.message });
@@ -199,15 +203,15 @@ exports.bulkDeleteVouchers = async (req, res) => {
         const sql = `DELETE FROM vouchers WHERE id IN (${ids.map(() => '?').join(',')})`;
         await db.execute(sql, ids);
 
-        res.status(200).json({ 
-            success: true, 
-            message: `${ids.length} voucher berhasil dihapus.` 
+        res.status(200).json({
+            success: true,
+            message: `${ids.length} voucher berhasil dihapus.`
         });
     } catch (error) {
         if (error.code === 'ER_ROW_IS_REFERENCED_2') {
-            return res.status(400).json({ 
-                success: false, 
-                message: "Beberapa voucher tidak bisa dihapus karena sudah memiliki riwayat penggunaan." 
+            return res.status(400).json({
+                success: false,
+                message: "Beberapa voucher tidak bisa dihapus karena sudah memiliki riwayat penggunaan."
             });
         }
         res.status(500).json({ success: false, error: error.message });
