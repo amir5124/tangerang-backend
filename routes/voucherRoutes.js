@@ -1,10 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const voucherController = require('../controllers/voucherController');
-const upload = require('../middlewares/upload');
+const uploadVoucher = require('../middlewares/uploadVoucher'); // ← Ganti ini
 
 // Upload single image untuk voucher (maks 10MB)
-router.post('/upload-image', upload.single('image'), voucherController.uploadVoucherImage);
+router.post('/upload-image', uploadVoucher.single('image'), voucherController.uploadVoucherImage);
 
 // Route untuk menghapus gambar
 router.delete('/image/:id', voucherController.deleteVoucherImage);
