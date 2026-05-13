@@ -14,7 +14,8 @@ exports.getAllUsers = async (req, res) => {
                 s.id AS store_id,
                 s.store_name,
                 s.approval_status AS store_status,
-                s.category AS store_category
+                s.category AS store_category,
+                s.commission_rate
             FROM users u
             LEFT JOIN stores s ON u.id = s.user_id
             ORDER BY u.created_at DESC
