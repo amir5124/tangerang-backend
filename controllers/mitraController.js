@@ -14,7 +14,8 @@ exports.getMitraDashboard = async (req, res) => {
             IFNULL((SELECT balance FROM wallets WHERE user_id = s.user_id LIMIT 1), 0) as balance,
             
             -- Total Pendapatan yang SUDAH CAIR (70% dari order completed)
-            IFNULL((SELECT SUM(FLOOR(total_price * 0.7)) FROM orders WHERE store_id = s.id AND status = 'completed'), 0) as revenue,
+            IFNULL((SELECT SUM(FLOOR(o2.total_price * (IFNULL(s.commission_rate, 70) / 100))) 
+        FROM orders o2 WHERE o2.store_id = s.id AND o2.status = 'completed'), 0) as revenue,
             
             -- Pekerjaan Selesai (Hanya yang sudah dikonfirmasi Customer)
             (SELECT COUNT(*) FROM orders WHERE store_id = s.id AND status = 'completed') as completed_jobs,
@@ -299,5 +300,43 @@ exports.approveMitra = async (req, res) => {
     } catch (err) {
         console.error("❌ CRITICAL ERROR [Approve Mitra]:", err);
         res.status(500).json({ success: false, error: err.message });
+    }
+};
+
+// =====================================================
+// KOMISI MITRA - Update commission_rate per store
+// =====================================================
+exports.updateCommission = async (req, res) => {
+    const { id } = req.params;
+    const { commission_rate } = req.body;
+
+    if (commission_rate === undefined || commission_rate === null) {
+        return res.status(400).json({ success: false, message: "commission_rate wajib diisi." });
+    }
+
+    const rate = parseFloat(commission_rate);
+    if (isNaN(rate) || rate < 0 || rate > 100) {
+        return res.status(400).json({ success: false, message: "commission_rate harus antara 0 dan 100." });
+    }
+
+    try {
+        const [store] = await db.query("SELECT id, store_name FROM stores WHERE id = ?", [id]);
+        if (store.length === 0) {
+            return res.status(404).json({ success: false, message: "Mitra tidak ditemukan." });
+        }
+
+        await db.query(
+            "UPDATE stores SET commission_rate = ? WHERE id = ?",
+            [rate, id]
+        );
+
+        return res.status(200).json({
+            success: true,
+            message: `Komisi ${store[0].store_name} berhasil diperbarui menjadi ${rate}%.`,
+            data: { store_id: id, commission_rate: rate }
+        });
+    } catch (err) {
+        console.error("❌ [updateCommission Error]:", err.message);
+        return res.status(500).json({ success: false, error: err.message });
     }
 };

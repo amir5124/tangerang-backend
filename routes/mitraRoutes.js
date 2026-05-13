@@ -16,7 +16,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({
     storage: storage,
-    limits: { fileSize: 5 * 1024 * 1024 } 
+    limits: { fileSize: 5 * 1024 * 1024 }
 });
 
 
@@ -29,6 +29,7 @@ router.get('/profile/:id', authenticateToken, mitraController.getStoreProfile);
 router.put('/profile/:id', authenticateToken, upload.single('image'), mitraController.updateStoreProfile);
 router.put('/manage/:id', authenticateToken, mitraController.updateMitra);
 router.put('/approve/:id', mitraController.approveMitra);
+router.put('/:id/commission', mitraController.updateCommission);
 router.delete('/:id', authenticateToken, mitraController.deleteMitra);
 
 module.exports = router;
