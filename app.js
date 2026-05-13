@@ -19,8 +19,8 @@ const userRoutes = require('./routes/userRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const assetRoutes = require('./routes/assetRoutes');
 const voucherRoutes = require('./routes/voucherRoutes');
-const settingsRoutes = require("./routes/settingsRoutes"); 
-const disburseRoutes = require("./routes/disburseRoutes"); 
+const settingsRoutes = require("./routes/settingsRoutes");
+const disburseRoutes = require("./routes/disburseRoutes");
 const balanceRoutes = require('./routes/balanceRoutes');
 const reviewRoutes = require('./routes/reviewRoutes');
 
@@ -53,7 +53,7 @@ app.use(cors({
 
 
 
-app.use(express.json({ limit: '10mb' })); 
+app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 app.use('/api/assets', assetRoutes);
@@ -62,6 +62,7 @@ app.use('/api/assets', assetRoutes);
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/uploads/services', express.static(path.join(__dirname, 'uploads/services')));
 app.use('/uploads/work_evidence', express.static(path.join(__dirname, 'uploads/work_evidence')));
+app.use('/uploads/vouchers', express.static(path.join(__dirname, 'uploads/vouchers')));
 
 // --- 4. ROUTE PENGETESAN ---
 app.get('/api', (req, res) => {
