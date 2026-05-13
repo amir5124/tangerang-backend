@@ -3,6 +3,18 @@ const db = require('../config/db');
 const { sendPushNotification } = require('../services/notificationService');
 
 /**
+ * HELPER: Parse commission_rate dari DB secara aman
+ * DB mengembalikan DECIMAL sebagai string "70.00" — helper ini normalisasi ke integer
+ * Contoh: "70.00" → 70, "65.50" → 65.5, null → 70 (fallback)
+ */
+const parseCommission = (raw) => {
+    const parsed = parseFloat(raw);
+    if (isNaN(parsed) || parsed < 0 || parsed > 100) return 70;
+    // Buang trailing zero: 70.00 → 70, 65.50 → 65.5
+    return parseFloat(parsed.toFixed(2));
+};
+
+/**
  * HELPER: Mengirim notifikasi ke semua Admin
  * @param {string} title - Judul Notifikasi
  * @param {string} body - Isi Pesan
@@ -19,10 +31,8 @@ const notifyAdmins = async (title, body, orderId = null) => {
 
             const tokens = admins.map(a => a.fcm_token);
 
-            // Menyiapkan data payload agar dibaca oleh handleRedirect di Frontend
             const dataPayload = {
                 type: "ADMIN_ORDER_ALERT",
-                // Penting: Frontend Anda mencari data.orderId untuk router.push(`/order/${data.orderId}`)
                 ...(orderId && { orderId: String(orderId) }),
             };
 
@@ -40,7 +50,9 @@ const notifyAdmins = async (title, body, orderId = null) => {
 
 /**
  * HELPER: Fungsi Internal untuk Pencairan Dana
- * FIX: Dasar bagi hasil adalah Gross Original (Total + Diskon) tanpa dikurangi fee app.
+ * - commission_rate diparse lewat parseCommission() agar anti-mismatch "70.00"
+ * - netAmount pakai Math.floor (bulatkan ke bawah, aman untuk mitra)
+ * - appProfit = grossOriginal - netAmount (selalu konsisten, tidak ada floating gap)
  */
 const releaseFundsToMitra = async (connection, orderId) => {
     console.log(`[DEBUG] === Memulai Proses Pencairan Dana Order #${orderId} ===`);
@@ -87,14 +99,18 @@ const releaseFundsToMitra = async (connection, orderId) => {
 
     const paidByCustomer = parseFloat(total_price) || 0;
     const discountVal = parseFloat(discount_amount) || 0;
-    const commissionPct = parseFloat(commission_rate) || 70; // fallback 70%
+
+    // Gunakan parseCommission() agar "70.00" → 70, tidak ada mismatch tipe
+    const commissionPct = parseCommission(commission_rate);
 
     // Gross original = nilai jasa sebelum voucher dipotong
     const grossOriginal = paidByCustomer + discountVal;
 
-    // Bagi hasil DINAMIS sesuai commission_rate mitra
+    // Bagi hasil DINAMIS — Math.floor memastikan tidak ada pecahan rupiah ke mitra
     const netAmount = Math.floor(grossOriginal * (commissionPct / 100));
+    // appProfit dihitung dari sisa agar total selalu = grossOriginal (anti floating point gap)
     const appProfit = grossOriginal - netAmount;
+    const appPct = parseFloat((100 - commissionPct).toFixed(2));
 
     console.log(`[DEBUG] Rincian Dana Order #${orderId}:
     - Toko                  : ${store_name}
@@ -104,7 +120,7 @@ const releaseFundsToMitra = async (connection, orderId) => {
     - Gross Original        : Rp${grossOriginal.toLocaleString('id-ID')} (Dasar Bagi Hasil)
     - Komisi Mitra          : ${commissionPct}%
     - Net to Mitra          : Rp${netAmount.toLocaleString('id-ID')}
-    - Profit App (Admin)    : Rp${appProfit.toLocaleString('id-ID')} (${100 - commissionPct}%)
+    - Profit App (Admin)    : Rp${appProfit.toLocaleString('id-ID')} (${appPct}%)
     --------------------------------------------------`);
 
     // 3. Update atau Buat Wallet Mitra
@@ -233,7 +249,6 @@ exports.createOrder = async (req, res) => {
 
         await connection.commit();
 
-        // NOTIFIKASI ADMIN: Order Baru Terbuat
         notifyAdmins("Pesanan Baru 🛒", `Order #${newOrderId} telah dibuat. Status: UNPAID. Total: Rp${finalTotalPrice.toLocaleString()}`, newOrderId);
 
         res.status(201).json({
@@ -270,7 +285,10 @@ exports.getOrderDetail = async (req, res) => {
                 m.full_name AS mitra_name, 
                 m.phone_number AS mitra_phone,
                 s.store_name,
+                IFNULL(s.commission_rate, 70) AS commission_rate,
                 (o.total_price + o.discount_amount) as original_subtotal,
+                -- Proyeksi bagi hasil untuk keperluan tampilan detail order
+                FLOOR((o.total_price + o.discount_amount) * (IFNULL(s.commission_rate, 70) / 100)) AS projected_mitra_earning,
                 (SELECT rating FROM reviews WHERE order_id = o.id LIMIT 1) as already_rated,
                 (SELECT JSON_ARRAYAGG(
                     JSON_OBJECT('nama', service_name, 'qty', qty, 'hargaSatuan', price_satuan)
@@ -288,6 +306,10 @@ exports.getOrderDetail = async (req, res) => {
         }
 
         let data = rows[0];
+
+        // Normalisasi commission_rate agar tidak "70.00" di response
+        data.commission_rate = parseCommission(data.commission_rate);
+
         if (data.proof_image_url && !data.proof_image_url.startsWith('http')) {
             data.proof_image_url = `${req.protocol}://${req.get('host')}/${data.proof_image_url.replace(/\\/g, '/')}`;
         }
@@ -302,7 +324,10 @@ exports.getUserOrders = async (req, res) => {
     try {
         const { userId } = req.params;
         const sql = `
-            SELECT o.id, o.status, o.total_price, o.discount_amount, o.scheduled_date, o.scheduled_time, o.order_date, o.cancelled_by, s.store_name as mitra_name 
+            SELECT 
+                o.id, o.status, o.total_price, o.discount_amount, 
+                o.scheduled_date, o.scheduled_time, o.order_date, o.cancelled_by, 
+                s.store_name as mitra_name 
             FROM orders o
             JOIN stores s ON o.store_id = s.id
             WHERE o.customer_id = ?
@@ -327,7 +352,6 @@ exports.cancelOrder = async (req, res) => {
         const [result] = await db.execute(sql, [reason, orderId]);
 
         if (result.affectedRows > 0) {
-            // NOTIFIKASI ADMIN: Pembatalan oleh Customer
             notifyAdmins("Pesanan Dibatalkan ⚠️", `Order #${orderId} dibatalkan Pelanggan. Alasan: ${reason || '-'}`, orderId);
             res.json({ success: true, message: 'Pesanan berhasil dibatalkan' });
         } else {
@@ -341,14 +365,31 @@ exports.cancelOrder = async (req, res) => {
 exports.getAllOrdersAdmin = async (req, res) => {
     try {
         const sql = `
-            SELECT o.id, o.status, o.customer_notes, o.total_price, o.platform_fee, o.service_fee, o.scheduled_date, o.scheduled_time, o.order_date, o.cancelled_by, o.cancel_reason, s.store_name as mitra_name, u.full_name as customer_name, p.payment_method, p.payment_type, p.payment_status
+            SELECT 
+                o.id, o.status, o.customer_notes, o.total_price, 
+                o.platform_fee, o.service_fee, o.scheduled_date, o.scheduled_time, 
+                o.order_date, o.cancelled_by, o.cancel_reason, 
+                s.store_name as mitra_name, 
+                -- Tampilkan komisi dan proyeksi earning mitra di dashboard admin
+                IFNULL(s.commission_rate, 70) AS commission_rate,
+                FLOOR((o.total_price + IFNULL(o.discount_amount, 0)) * (IFNULL(s.commission_rate, 70) / 100)) AS mitra_earning,
+                ((o.total_price + IFNULL(o.discount_amount, 0)) - FLOOR((o.total_price + IFNULL(o.discount_amount, 0)) * (IFNULL(s.commission_rate, 70) / 100))) AS app_profit,
+                u.full_name as customer_name, 
+                p.payment_method, p.payment_type, p.payment_status
             FROM orders o
             JOIN stores s ON o.store_id = s.id
             JOIN users u ON o.customer_id = u.id
             LEFT JOIN payments p ON o.id = p.order_id
             ORDER BY o.order_date DESC`;
         const [rows] = await db.execute(sql);
-        res.status(200).json({ success: true, data: rows });
+
+        // Normalisasi commission_rate di semua baris
+        const normalized = rows.map(r => ({
+            ...r,
+            commission_rate: parseCommission(r.commission_rate)
+        }));
+
+        res.status(200).json({ success: true, data: normalized });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
     }
@@ -357,7 +398,10 @@ exports.getAllOrdersAdmin = async (req, res) => {
 exports.getRefundHistory = async (req, res) => {
     try {
         const sql = `
-            SELECT p.order_id, u.full_name as customer_name, p.gross_amount as nominal_refund, p.transaction_time as tanggal_refund, o.status as order_status, o.platform_fee, o.service_fee, o.cancelled_by, o.cancel_reason
+            SELECT 
+                p.order_id, u.full_name as customer_name, p.gross_amount as nominal_refund, 
+                p.transaction_time as tanggal_refund, o.status as order_status, 
+                o.platform_fee, o.service_fee, o.cancelled_by, o.cancel_reason
             FROM payments p
             JOIN orders o ON p.order_id = o.id
             JOIN users u ON o.customer_id = u.id
@@ -438,7 +482,6 @@ exports.updateOrderStatus = async (req, res) => {
 
         await connection.commit();
 
-        // NOTIFIKASI ADMIN: Perubahan Status oleh Mitra
         notifyAdmins("Update Status Order 🛠️", `Order #${id} diupdate ke ${statusToSave} oleh Mitra.`, id);
 
         res.status(200).json({
@@ -503,7 +546,6 @@ exports.customerCompleteOrder = async (req, res) => {
         if (updateResult.affectedRows > 0) {
             const amountCair = await releaseFundsToMitra(connection, id);
 
-            // NOTIFIKASI ADMIN: Order Selesai Sempurna
             notifyAdmins("Order Selesai ✅", `Pelanggan telah mengkonfirmasi penyelesaian Order #${id}. Rating: ${rating}⭐`, id);
 
             if (amountCair) {
