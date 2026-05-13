@@ -2,7 +2,8 @@ const db = require('../config/db');
 const path = require('path');
 const fs = require('fs-extra');
 
-// Pastikan direktori uploads/vouchers ada
+// Gunakan path relatif yang akan terhubung ke persistent storage Coolify
+// Persistent storage sudah terhubung ke /app/uploads
 const uploadDir = path.join(__dirname, '../uploads/vouchers');
 fs.ensureDirSync(uploadDir);
 
@@ -80,8 +81,8 @@ exports.validateVoucher = async (req, res) => {
             data: {
                 voucher_id: v.id,
                 code: v.code,
-                description: v.description, // Menampilkan kata-kata promo
-                image_url: v.image_url,     // Menampilkan gambar voucher
+                description: v.description,
+                image_url: v.image_url,
                 discount_amount: discountAmount,
                 final_subtotal: subtotal - discountAmount,
                 usage_info: `Penggunaan ke-${totalUsed + 1} dari ${limit}`
@@ -99,7 +100,6 @@ exports.validateVoucher = async (req, res) => {
  */
 exports.getVouchers = async (req, res) => {
     try {
-        // Mengambil semua kolom termasuk description dan image_url
         const [rows] = await db.execute("SELECT * FROM vouchers ORDER BY created_at DESC");
         res.status(200).json({ success: true, data: rows });
     } catch (error) {
@@ -109,6 +109,7 @@ exports.getVouchers = async (req, res) => {
 
 /**
  * 3. UPLOAD GAMBAR VOUCHER (maks 10MB)
+ * File akan tersimpan di persistent storage melalui folder uploads/vouchers
  */
 exports.uploadVoucherImage = async (req, res) => {
     try {
@@ -144,6 +145,7 @@ exports.uploadVoucherImage = async (req, res) => {
 
 /**
  * 4. HAPUS GAMBAR VOUCHER
+ * Menghapus file dari persistent storage
  */
 exports.deleteVoucherImage = async (req, res) => {
     const { id } = req.params;
@@ -165,7 +167,7 @@ exports.deleteVoucherImage = async (req, res) => {
         const imageUrl = vouchers[0].image_url;
 
         if (imageUrl) {
-            // Hapus file dari sistem
+            // Hapus file dari sistem (terhubung ke persistent storage)
             const filename = path.basename(imageUrl);
             const filePath = path.join(__dirname, '../uploads/vouchers', filename);
 
@@ -195,7 +197,7 @@ exports.deleteVoucherImage = async (req, res) => {
 };
 
 /**
- * 5. UPDATE VOUCHER (SINGLE) - Modified dengan dukungan upload gambar
+ * 5. UPDATE VOUCHER (SINGLE) - Dengan dukungan upload gambar
  */
 exports.updateVoucher = async (req, res) => {
     const { id } = req.params;
@@ -277,7 +279,6 @@ exports.bulkCreateVouchers = async (req, res) => {
     }
 
     try {
-        // Menambahkan description dan image_url ke dalam urutan kolom yang akan di-insert
         const values = vouchers.map(v => [
             v.code,
             v.description || null,
@@ -307,6 +308,7 @@ exports.bulkCreateVouchers = async (req, res) => {
 
 /**
  * 7. BULK DELETE VOUCHERS
+ * Menghapus voucher beserta file gambarnya dari persistent storage
  */
 exports.bulkDeleteVouchers = async (req, res) => {
     const { ids } = req.body;
