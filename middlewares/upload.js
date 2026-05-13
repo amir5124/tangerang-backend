@@ -8,33 +8,13 @@ if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
 }
 
-// Memastikan folder vouchers ada (TAMBAHAN UNTUK VOUCHER)
+// Memastikan folder vouchers ada
 const vouchersDir = 'uploads/vouchers';
 if (!fs.existsSync(vouchersDir)) {
   fs.mkdirSync(vouchersDir, { recursive: true });
 }
 
-// Storage untuk services (YANG SUDAH ADA)
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname));
-  }
-});
-
-// Storage untuk vouchers (TAMBAHAN)
-const storageVouchers = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, vouchersDir);
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname));
-  }
-});
-
-// Filter file untuk gambar (TAMBAHAN)
+// Filter file untuk gambar
 const fileFilter = (req, file, cb) => {
   const allowedTypes = /jpeg|jpg|png|gif|webp/;
   const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
@@ -47,22 +27,44 @@ const fileFilter = (req, file, cb) => {
   }
 };
 
-// Upload untuk services (YANG SUDAH ADA, dengan limit 5MB)
-const upload = multer({
-  storage: storage,
+// Storage untuk services
+const storageServices = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + path.extname(file.originalname));
+  }
+});
+
+// Storage untuk vouchers
+const storageVouchers = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, vouchersDir);
+  },
+  filename: (req, file, cb) => {
+    cb(null, Date.now() + path.extname(file.originalname));
+  }
+});
+
+// Upload untuk services (5MB)
+const uploadServices = multer({
+  storage: storageServices,
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: fileFilter
 });
 
-// Upload untuk vouchers (TAMBAHAN, dengan limit 10MB)
-const uploadVoucher = multer({
+// Upload untuk vouchers (10MB)
+const uploadVouchers = multer({
   storage: storageVouchers,
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: fileFilter
 });
 
-// Export kedua konfigurasi (TAMBAHAN)
+// Export sebagai object dengan method single
 module.exports = {
-  upload,           // Untuk services (5MB)
-  uploadVoucher     // Untuk vouchers (10MB)
+  upload: uploadServices,
+  uploadVoucher: uploadVouchers,
+  single: (fieldName) => uploadServices.single(fieldName),
+  voucherSingle: (fieldName) => uploadVouchers.single(fieldName)
 };
