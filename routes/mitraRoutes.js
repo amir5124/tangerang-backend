@@ -35,4 +35,9 @@ router.put('/revert-approved-to-pending/:id', mitraController.revertApprovedToPe
 router.put('/:id/commission', mitraController.updateCommission);
 router.delete('/:id', authenticateToken, mitraController.deleteMitra);
 
+router.get('/admin/all-users-with-mitra', mitraController.getAllUsersWithMitraStatus);
+router.put('/reject-mitra-user/:id', mitraController.rejectMitraUser);
+router.post('/create-store-from-user', mitraController.createStoreFromUser);
+router.put('/approve-mitra-user/:id', mitraController.approveMitraUser);
+
 module.exports = router;

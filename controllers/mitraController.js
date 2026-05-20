@@ -546,3 +546,183 @@ exports.updateCommission = async (req, res) => {
         return res.status(500).json({ success: false, error: err.message });
     }
 };
+
+// =====================================================
+// FUNGSI TAMBAHAN UNTUK USER MITRA YANG BELUM MEMILIKI STORE
+// =====================================================
+
+exports.getAllUsersWithMitraStatus = async (req, res) => {
+    try {
+        const query = `
+            SELECT 
+                u.id,
+                u.full_name,
+                u.email,
+                u.phone_number,
+                u.role,
+                s.id as store_id,
+                s.store_name,
+                s.approval_status as store_status,
+                s.commission_rate,
+                s.rejection_reason,
+                s.created_at as store_created_at
+            FROM users u
+            LEFT JOIN stores s ON u.id = s.user_id
+            ORDER BY u.created_at DESC
+        `;
+
+        const [users] = await db.query(query);
+
+        const processedUsers = users.map(user => {
+            if (user.role === 'mitra' && !user.store_id) {
+                return {
+                    ...user,
+                    store_status: 'pending_registration',
+                    store_name: user.full_name || 'Belum mengisi data toko'
+                };
+            }
+            return user;
+        });
+
+        res.json({
+            success: true,
+            data: processedUsers
+        });
+    } catch (error) {
+        console.error("❌ [getAllUsersWithMitraStatus Error]:", error.message);
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
+
+exports.rejectMitraUser = async (req, res) => {
+    const { id } = req.params;
+    const { rejection_reason } = req.body;
+
+    try {
+        const [result] = await db.query(`
+            UPDATE users 
+            SET role = 'customer', 
+                updated_at = NOW()
+            WHERE id = ? AND role = 'mitra'
+        `, [id]);
+
+        if (result.affectedRows === 0) {
+            return res.status(404).json({
+                success: false,
+                message: "User tidak ditemukan atau bukan mitra"
+            });
+        }
+
+        res.json({
+            success: true,
+            message: "Pendaftaran mitra ditolak"
+        });
+    } catch (error) {
+        console.error("❌ [rejectMitraUser Error]:", error.message);
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
+
+exports.createStoreFromUser = async (req, res) => {
+    const { user_id, store_name, category, description, address, latitude, longitude, approval_status } = req.body;
+
+    try {
+        const [existing] = await db.query("SELECT id FROM stores WHERE user_id = ?", [user_id]);
+        if (existing.length > 0) {
+            return res.status(400).json({
+                success: false,
+                message: "User sudah memiliki toko"
+            });
+        }
+
+        const [result] = await db.query(`
+            INSERT INTO stores (
+                user_id, store_name, category, description, 
+                address, latitude, longitude, approval_status,
+                is_active, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NOW())
+        `, [user_id, store_name, category || 'pending', description || '', address || '', latitude || 0, longitude || 0, approval_status || 'pending']);
+
+        res.json({
+            success: true,
+            message: "Store berhasil dibuat",
+            data: { store_id: result.insertId }
+        });
+    } catch (error) {
+        console.error("❌ [createStoreFromUser Error]:", error.message);
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
+
+exports.approveMitraUser = async (req, res) => {
+    const { id } = req.params;
+    const { store_name, category } = req.body;
+
+    try {
+        const [user] = await db.query("SELECT id, full_name, email, phone_number FROM users WHERE id = ? AND role = 'mitra'", [id]);
+
+        if (user.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: "User mitra tidak ditemukan"
+            });
+        }
+
+        const [existingStore] = await db.query("SELECT id FROM stores WHERE user_id = ?", [id]);
+
+        let storeId;
+        if (existingStore.length > 0) {
+            storeId = existingStore[0].id;
+            await db.query(`
+                UPDATE stores 
+                SET approval_status = 'approved', 
+                    is_active = 1,
+                    store_name = COALESCE(?, store_name),
+                    category = COALESCE(?, category)
+                WHERE id = ?
+            `, [store_name || user[0].full_name, category || 'pending', storeId]);
+        } else {
+            const [result] = await db.query(`
+                INSERT INTO stores (
+                    user_id, store_name, category, description, 
+                    address, latitude, longitude, approval_status,
+                    is_active, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'approved', 1, NOW())
+            `, [id, store_name || user[0].full_name, category || 'pending', '', '', 0, 0]);
+            storeId = result.insertId;
+        }
+
+        const [storeData] = await db.query(`
+            SELECT s.store_name, u.fcm_token 
+            FROM stores s 
+            JOIN users u ON s.user_id = u.id 
+            WHERE s.id = ?
+        `, [storeId]);
+
+        if (storeData.length > 0 && storeData[0].fcm_token && storeData[0].fcm_token.trim() !== "") {
+            try {
+                await sendPushNotification(
+                    storeData[0].fcm_token,
+                    "Selamat! Akun Mitra Disetujui",
+                    `Halo ${storeData[0].store_name}, pendaftaran Anda telah diterima. Sekarang Anda bisa mulai menerima pesanan!`,
+                    {
+                        storeId: String(storeId),
+                        type: "MITRA_APPROVED",
+                        status: "approved"
+                    }
+                );
+            } catch (fcmErr) {
+                console.error("⚠️ Gagal mengirim FCM:", fcmErr.message);
+            }
+        }
+
+        res.json({
+            success: true,
+            message: "Mitra berhasil disetujui",
+            data: { store_id: storeId }
+        });
+    } catch (error) {
+        console.error("❌ [approveMitraUser Error]:,", error.message);
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
