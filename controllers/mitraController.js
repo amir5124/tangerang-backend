@@ -303,6 +303,212 @@ exports.approveMitra = async (req, res) => {
     }
 };
 
+// Fungsi untuk menolak/mengembalikan mitra ke status pending
+exports.rejectMitra = async (req, res) => {
+    const { id } = req.params;
+    const { rejection_reason } = req.body;
+
+    console.log(`DEBUG: Memulai penolakan mitra dengan ID: ${id}`);
+
+    try {
+        // Cek apakah mitra ada
+        const [storeData] = await db.query(`
+            SELECT s.store_name, s.approval_status, u.fcm_token 
+            FROM stores s 
+            JOIN users u ON s.user_id = u.id 
+            WHERE s.id = ?
+        `, [id]);
+
+        if (!storeData || storeData.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: "Data Mitra tidak ditemukan"
+            });
+        }
+
+        const { store_name, approval_status, fcm_token } = storeData[0];
+
+        console.log(`DEBUG: Data ditemukan - Nama Toko: ${store_name}, Status Saat Ini: ${approval_status}`);
+
+        // Update status menjadi 'rejected' (kembali ke status pending? Tidak, tetap rejected)
+        // Sesuai enum yang ada: 'pending', 'approved', 'rejected'
+        // Jika ingin mengembalikan ke pending, gunakan 'pending'
+        const updateQuery = `
+            UPDATE stores 
+            SET 
+                approval_status = 'rejected', 
+                is_active = 0,
+                rejection_reason = ?
+            WHERE id = ?
+        `;
+
+        const [result] = await db.query(updateQuery, [rejection_reason || null, id]);
+
+        if (result.affectedRows === 0) {
+            return res.status(400).json({
+                success: false,
+                message: "Gagal memperbarui status"
+            });
+        }
+
+        // Kirim notifikasi ke mitra
+        if (fcm_token && fcm_token.trim() !== "") {
+            try {
+                await sendPushNotification(
+                    fcm_token,
+                    "Pendaftaran Mitra Ditolak",
+                    `Halo ${store_name}, pendaftaran Anda ditolak. ${rejection_reason ? `Alasan: ${rejection_reason}` : 'Silahkan hubungi admin untuk informasi lebih lanjut.'}`,
+                    {
+                        storeId: String(id),
+                        type: "MITRA_REJECTED",
+                        status: "rejected"
+                    }
+                );
+                console.log(`✅ Notifikasi penolakan berhasil dikirim ke: ${store_name}`);
+            } catch (fcmErr) {
+                console.error("⚠️ Gagal mengirim FCM:", fcmErr.message);
+            }
+        }
+
+        res.json({
+            success: true,
+            message: `Mitra ${store_name} berhasil ditolak.`
+        });
+
+    } catch (err) {
+        console.error("❌ ERROR [Reject Mitra]:", err);
+        res.status(500).json({
+            success: false,
+            error: err.message
+        });
+    }
+};
+
+// Fungsi untuk mengembalikan mitra dari rejected ke pending (agar bisa diajukan ulang)
+exports.revertRejectedToPending = async (req, res) => {
+    const { id } = req.params;
+
+    console.log(`DEBUG: Mengembalikan mitra ID ${id} dari rejected ke pending`);
+
+    try {
+        const [storeData] = await db.query(`
+            SELECT store_name, approval_status 
+            FROM stores 
+            WHERE id = ?
+        `, [id]);
+
+        if (!storeData || storeData.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: "Data Mitra tidak ditemukan"
+            });
+        }
+
+        const { store_name, approval_status } = storeData[0];
+
+        // Hanya bisa revert jika statusnya 'rejected'
+        if (approval_status !== 'rejected') {
+            return res.status(400).json({
+                success: false,
+                message: `Hanya mitra dengan status 'rejected' yang dapat dikembalikan ke pending. Status saat ini: ${approval_status}`
+            });
+        }
+
+        const updateQuery = `
+            UPDATE stores 
+            SET 
+                approval_status = 'pending', 
+                is_active = 0,
+                rejection_reason = NULL
+            WHERE id = ?
+        `;
+
+        const [result] = await db.query(updateQuery, [id]);
+
+        if (result.affectedRows === 0) {
+            return res.status(400).json({
+                success: false,
+                message: "Gagal memperbarui status"
+            });
+        }
+
+        res.json({
+            success: true,
+            message: `Mitra ${store_name} berhasil dikembalikan ke status pending. Mitra dapat mengajukan ulang pendaftaran.`
+        });
+
+    } catch (err) {
+        console.error("❌ ERROR [Revert Rejected to Pending]:", err);
+        res.status(500).json({
+            success: false,
+            error: err.message
+        });
+    }
+};
+
+// Fungsi untuk mengembalikan mitra dari approved ke pending (jika perlu verifikasi ulang)
+exports.revertApprovedToPending = async (req, res) => {
+    const { id } = req.params;
+    const { rejection_reason } = req.body;
+
+    console.log(`DEBUG: Mengembalikan mitra ID ${id} dari approved ke pending`);
+
+    try {
+        const [storeData] = await db.query(`
+            SELECT store_name, approval_status 
+            FROM stores 
+            WHERE id = ?
+        `, [id]);
+
+        if (!storeData || storeData.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: "Data Mitra tidak ditemukan"
+            });
+        }
+
+        const { store_name, approval_status } = storeData[0];
+
+        // Hanya bisa revert jika statusnya 'approved'
+        if (approval_status !== 'approved') {
+            return res.status(400).json({
+                success: false,
+                message: `Hanya mitra dengan status 'approved' yang dapat dikembalikan ke pending. Status saat ini: ${approval_status}`
+            });
+        }
+
+        const updateQuery = `
+            UPDATE stores 
+            SET 
+                approval_status = 'pending', 
+                is_active = 0,
+                rejection_reason = ?
+            WHERE id = ?
+        `;
+
+        const [result] = await db.query(updateQuery, [rejection_reason || 'Verifikasi ulang oleh admin', id]);
+
+        if (result.affectedRows === 0) {
+            return res.status(400).json({
+                success: false,
+                message: "Gagal memperbarui status"
+            });
+        }
+
+        res.json({
+            success: true,
+            message: `Mitra ${store_name} berhasil dikembalikan ke status pending untuk verifikasi ulang.`
+        });
+
+    } catch (err) {
+        console.error("❌ ERROR [Revert Approved to Pending]:", err);
+        res.status(500).json({
+            success: false,
+            error: err.message
+        });
+    }
+};
+
 // =====================================================
 // KOMISI MITRA - Update commission_rate per store
 // =====================================================

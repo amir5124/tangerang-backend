@@ -29,6 +29,9 @@ router.get('/profile/:id', authenticateToken, mitraController.getStoreProfile);
 router.put('/profile/:id', authenticateToken, upload.single('image'), mitraController.updateStoreProfile);
 router.put('/manage/:id', authenticateToken, mitraController.updateMitra);
 router.put('/approve/:id', mitraController.approveMitra);
+router.put('/reject/:id', mitraController.rejectMitra);
+router.put('/revert-rejected-to-pending/:id', mitraController.revertRejectedToPending);
+router.put('/revert-approved-to-pending/:id', mitraController.revertApprovedToPending);
 router.put('/:id/commission', mitraController.updateCommission);
 router.delete('/:id', authenticateToken, mitraController.deleteMitra);
 
