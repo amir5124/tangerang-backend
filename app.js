@@ -47,7 +47,7 @@ app.use(cors({
             callback(new Error('Akses ditolak oleh kebijakan CORS'));
         }
     },
-    methods: 'GET,POST,PUT,DELETE,OPTIONS',
+    methods: 'GET,POST,PUT,DELETE,PATCH,OPTIONS',
     allowedHeaders: 'Content-Type,Authorization',
     credentials: true
 }));
