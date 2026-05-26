@@ -276,7 +276,7 @@ const getAllReviewsForAdmin = async (req, res) => {
                 u.phone_number AS customer_phone,
                 s.store_name,
                 s.id AS store_id,
-                o.order_number
+                o.id AS order_id
             FROM reviews r
             LEFT JOIN users u ON r.customer_id = u.id
             LEFT JOIN stores s ON r.store_id = s.id
