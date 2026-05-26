@@ -23,6 +23,7 @@ const settingsRoutes = require("./routes/settingsRoutes");
 const disburseRoutes = require("./routes/disburseRoutes");
 const balanceRoutes = require('./routes/balanceRoutes');
 const reviewRoutes = require('./routes/reviewRoutes');
+const bankRoutes = require('./routes/bankRoutes')
 
 const app = express();
 app.set('trust proxy', 1);
@@ -87,6 +88,8 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/disburse', disburseRoutes);
 app.use('/api/balance', balanceRoutes);
 app.use('/api/reviews', reviewRoutes);
+app.use('/api/bank', bankRoutes);
+
 
 // --- 6. SERVER LISTENING ---
 const PORT = process.env.PORT || 3000;
