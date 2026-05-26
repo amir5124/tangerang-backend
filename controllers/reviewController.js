@@ -13,13 +13,10 @@ const getReviewSummary = async (req, res) => {
                 ROUND(AVG(rating_punctuality), 1)     AS avg_punctuality,
                 ROUND(AVG(rating_communication), 1)   AS avg_communication
             FROM reviews
-            WHERE store_id = ?
+            WHERE store_id = ? AND is_displayed = 1
         `, [store_id]);
 
-        // Query 2: Komentar terbaru
-        // LEFT JOIN orders  → agar review tetap muncul walau order terhapus
-        // LEFT JOIN users   → agar review tetap muncul walau user terhapus
-        // Ambil service_name dari order_items (bukan o.items JSON)
+        // Query 2: Komentar terbaru (hanya yang ditampilkan)
         const [comments] = await db.execute(`
             SELECT
                 r.id                    AS review_id,
@@ -29,13 +26,14 @@ const getReviewSummary = async (req, res) => {
                 r.rating_communication,
                 r.comment,
                 r.created_at,
+                r.is_displayed,
                 u.full_name,
                 u.profile_picture,
                 o.items                 AS detail_jasa
             FROM reviews r
             LEFT JOIN orders o  ON r.order_id  = o.id
             LEFT JOIN users  u  ON r.customer_id = u.id
-            WHERE r.store_id = ?
+            WHERE r.store_id = ? AND r.is_displayed = 1
             ORDER BY r.created_at DESC
             LIMIT 10
         `, [store_id]);
@@ -47,7 +45,7 @@ const getReviewSummary = async (req, res) => {
                 if (item.detail_jasa) {
                     detail_jasa = typeof item.detail_jasa === 'string'
                         ? JSON.parse(item.detail_jasa)
-                        : item.detail_jasa; // MySQL driver kadang sudah auto-parse JSON
+                        : item.detail_jasa;
                 }
             } catch {
                 detail_jasa = [];
@@ -94,12 +92,12 @@ const createReview = async (req, res) => {
             return res.status(409).json({ success: false, message: "Order ini sudah pernah direview." });
         }
 
-        // INSERT — tidak ada kolom updated_at di tabel reviews
+        // INSERT — default is_displayed = 0 (perlu persetujuan admin)
         const [result] = await db.execute(`
             INSERT INTO reviews
                 (store_id, order_id, customer_id, rating,
-                 rating_quality, rating_punctuality, rating_communication, comment)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 rating_quality, rating_punctuality, rating_communication, comment, is_displayed)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
         `, [
             store_id, order_id, customer_id, rating,
             rating_quality ?? 5,
@@ -110,7 +108,7 @@ const createReview = async (req, res) => {
 
         res.status(201).json({
             success: true,
-            message: "Review berhasil ditambahkan.",
+            message: "Review berhasil ditambahkan. Menunggu persetujuan admin untuk ditampilkan.",
             review_id: result.insertId
         });
     } catch (error) {
@@ -120,7 +118,6 @@ const createReview = async (req, res) => {
 };
 
 // ─── UPDATE REVIEW ───────────────────────────────────────────────────────────
-// CATATAN: tabel reviews TIDAK punya kolom updated_at
 const updateReview = async (req, res) => {
     const { review_id } = req.params;
     const { rating, rating_quality, rating_punctuality, rating_communication, comment } = req.body;
@@ -137,7 +134,6 @@ const updateReview = async (req, res) => {
             return res.status(404).json({ success: false, message: "Review tidak ditemukan." });
         }
 
-        // Tidak pakai updated_at karena kolom tersebut tidak ada di tabel reviews
         await db.execute(`
             UPDATE reviews
             SET
@@ -195,6 +191,7 @@ const getReviewById = async (req, res) => {
                 r.rating_communication,
                 r.comment,
                 r.created_at,
+                r.is_displayed,
                 u.full_name,
                 u.profile_picture,
                 o.items                 AS detail_jasa
@@ -227,6 +224,7 @@ const getReviewById = async (req, res) => {
     }
 };
 
+// ─── GET ALL LATEST REVIEWS (HANYA YANG DITAMPILKAN) ─────────────────────────
 const getAllLatestReviews = async (req, res) => {
     try {
         const [comments] = await db.execute(`
@@ -241,6 +239,7 @@ const getAllLatestReviews = async (req, res) => {
             FROM reviews r
             LEFT JOIN users u  ON r.customer_id = u.id
             LEFT JOIN stores s ON r.store_id = s.id
+            WHERE r.is_displayed = 1
             ORDER BY r.created_at DESC
             LIMIT 10
         `);
@@ -259,11 +258,162 @@ const getAllLatestReviews = async (req, res) => {
     }
 };
 
+// ─── NEW: GET ALL REVIEWS FOR ADMIN (DENGAN STATUS TAMPIL) ───────────────────
+const getAllReviewsForAdmin = async (req, res) => {
+    try {
+        const [reviews] = await db.execute(`
+            SELECT
+                r.id                    AS review_id,
+                r.rating,
+                r.rating_quality,
+                r.rating_punctuality,
+                r.rating_communication,
+                r.comment,
+                r.created_at,
+                r.is_displayed,
+                u.full_name AS customer_name,
+                u.email AS customer_email,
+                u.phone_number AS customer_phone,
+                s.store_name,
+                s.id AS store_id,
+                o.order_number
+            FROM reviews r
+            LEFT JOIN users u ON r.customer_id = u.id
+            LEFT JOIN stores s ON r.store_id = s.id
+            LEFT JOIN orders o ON r.order_id = o.id
+            ORDER BY r.created_at DESC
+        `);
+
+        res.status(200).json({
+            success: true,
+            reviews: reviews
+        });
+    } catch (error) {
+        console.error('[getAllReviewsForAdmin] ❌', error.message);
+        res.status(500).json({
+            success: false,
+            message: "Gagal mengambil daftar review",
+            error: error.message
+        });
+    }
+};
+
+// ─── NEW: TOGGLE REVIEW DISPLAY STATUS ───────────────────────────────────────
+const toggleReviewDisplay = async (req, res) => {
+    const { review_id } = req.params;
+    const { is_displayed } = req.body;
+
+    if (is_displayed === undefined) {
+        return res.status(400).json({
+            success: false,
+            message: "Field is_displayed wajib diisi (true/false)"
+        });
+    }
+
+    try {
+        const [existing] = await db.execute(
+            `SELECT id FROM reviews WHERE id = ?`, [review_id]
+        );
+        if (existing.length === 0) {
+            return res.status(404).json({ success: false, message: "Review tidak ditemukan." });
+        }
+
+        await db.execute(`
+            UPDATE reviews SET is_displayed = ? WHERE id = ?
+        `, [is_displayed ? 1 : 0, review_id]);
+
+        res.status(200).json({
+            success: true,
+            message: is_displayed ? "Review akan ditampilkan di aplikasi" : "Review disembunyikan dari aplikasi"
+        });
+    } catch (error) {
+        console.error('[toggleReviewDisplay] ❌', error.message);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// ─── NEW: BULK UPDATE REVIEW DISPLAY STATUS ──────────────────────────────────
+const bulkUpdateReviewDisplay = async (req, res) => {
+    const { review_ids, is_displayed } = req.body;
+
+    if (!review_ids || !Array.isArray(review_ids) || review_ids.length === 0) {
+        return res.status(400).json({
+            success: false,
+            message: "review_ids harus berupa array non-kosong"
+        });
+    }
+
+    if (is_displayed === undefined) {
+        return res.status(400).json({
+            success: false,
+            message: "Field is_displayed wajib diisi (true/false)"
+        });
+    }
+
+    try {
+        const placeholders = review_ids.map(() => '?').join(',');
+        await db.execute(
+            `UPDATE reviews SET is_displayed = ? WHERE id IN (${placeholders})`,
+            [is_displayed ? 1 : 0, ...review_ids]
+        );
+
+        res.status(200).json({
+            success: true,
+            message: `${review_ids.length} review berhasil diupdate`,
+            updated_count: review_ids.length
+        });
+    } catch (error) {
+        console.error('[bulkUpdateReviewDisplay] ❌', error.message);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
+// ─── NEW: GET REVIEW STATISTICS FOR ADMIN ────────────────────────────────────
+const getReviewStatistics = async (req, res) => {
+    try {
+        const [stats] = await db.execute(`
+            SELECT
+                COUNT(*) AS total_reviews,
+                SUM(CASE WHEN is_displayed = 1 THEN 1 ELSE 0 END) AS displayed_reviews,
+                SUM(CASE WHEN is_displayed = 0 THEN 1 ELSE 0 END) AS hidden_reviews,
+                ROUND(AVG(rating), 1) AS avg_rating,
+                COUNT(DISTINCT store_id) AS stores_with_reviews
+            FROM reviews
+        `);
+
+        const [ratingDistribution] = await db.execute(`
+            SELECT 
+                rating,
+                COUNT(*) AS count
+            FROM reviews
+            GROUP BY rating
+            ORDER BY rating DESC
+        `);
+
+        res.status(200).json({
+            success: true,
+            statistics: stats[0],
+            rating_distribution: ratingDistribution
+        });
+    } catch (error) {
+        console.error('[getReviewStatistics] ❌', error.message);
+        res.status(500).json({
+            success: false,
+            message: "Gagal mengambil statistik review",
+            error: error.message
+        });
+    }
+};
+
 module.exports = {
     getReviewSummary,
     createReview,
     updateReview,
     deleteReview,
     getReviewById,
-    getAllLatestReviews
+    getAllLatestReviews,
+    getAllReviewsForAdmin,
+    toggleReviewDisplay,
+    bulkUpdateReviewDisplay,
+    getReviewStatistics
 };
