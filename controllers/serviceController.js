@@ -92,6 +92,28 @@ exports.updateService = async (req, res) => {
     }
 };
 
+// Tambahkan fungsi ini di serviceController.js
+
+// 5. TOGGLE AKTIF / NONAKTIF JASA
+exports.toggleService = async (req, res) => {
+    const { id } = req.params;
+    try {
+        const [service] = await db.query("SELECT is_active FROM services WHERE id = ?", [id]);
+
+        if (service.length === 0) {
+            return res.status(404).json({ message: "Jasa tidak ditemukan" });
+        }
+
+        const newStatus = service[0].is_active ? 0 : 1;
+        await db.query("UPDATE services SET is_active = ? WHERE id = ?", [newStatus, id]);
+
+        res.json({ message: "Status berhasil diubah", is_active: newStatus });
+    } catch (err) {
+        console.error(">>> [Error] toggleService:", err.message);
+        res.status(500).json({ error: err.message });
+    }
+};
+
 // 4. HAPUS JASA
 exports.deleteService = async (req, res) => {
     const { id } = req.params;

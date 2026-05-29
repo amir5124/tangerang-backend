@@ -34,6 +34,8 @@ const upload = multer({
 
 // Publik: Lihat jasa toko
 router.get('/store/:store_id', serviceController.getServicesByStore);
+// Tambahkan setelah require serviceController
+router.patch('/:id/toggle', authenticateToken, isMitra, serviceController.toggleService);
 
 // Khusus Mitra: Tambah Jasa
 router.post('/', authenticateToken, isMitra, upload.single('image'), serviceController.createService);
