@@ -1,44 +1,35 @@
 // /app/services/notificationService.js
 
-// Import instance admin dari konfigurasi Firebase kamu
 const admin = require('../config/firebaseConfig');
+const db = require('../config/db');
 
 /**
- * Fungsi untuk mengirim push notification via Firebase Cloud Messaging (FCM)
- * @param {string} targetToken - FCM Token perangkat tujuan
- * @param {string} title - Judul notifikasi
- * @param {string} body - Isi pesan notifikasi
- * @param {object} data - Data tambahan (optional), otomatis diconvert ke string
+ * INTI: Kirim ke satu FCM token spesifik
+ * Tetap dieksport agar kompatibel dengan kode lama yang masih pakai sendPushNotification(token, ...)
  */
-exports.sendPushNotification = async (targetToken, title, body, data = {}) => {
-    // 1. Validasi keberadaan token
-    if (!targetToken || targetToken === 'null' || targetToken === '') {
-        console.log("⚠️ Skip sending notification: No valid FCM Token found.");
+const sendToToken = async (targetToken, title, body, data = {}) => {
+    if (!targetToken || targetToken === 'null' || targetToken === '' || targetToken === 'NO_TOKEN') {
+        console.log("⚠️ Skip: No valid FCM Token.");
         return null;
     }
 
     try {
-        // 2. FCM hanya menerima value berupa STRING di dalam objek data
         const stringData = Object.keys(data).reduce((acc, key) => {
             acc[key] = String(data[key]);
             return acc;
         }, {});
 
-        // 3. Susun payload pesan
         const message = {
             token: targetToken,
-            notification: {
-                title: title,
-                body: body,
-            },
-            data: stringData, 
+            notification: { title, body },
+            data: stringData,
             android: {
                 priority: "high",
                 notification: {
                     sound: "default",
-                    channelId: "orders", // Pastikan ID ini sama dengan yang di-create di frontend (Expo/RN)
+                    channelId: "orders",
                     priority: "high",
-                    clickAction: "TOP_STORY_ACTIVITY", 
+                    clickAction: "TOP_STORY_ACTIVITY",
                 },
             },
             apns: {
@@ -51,21 +42,110 @@ exports.sendPushNotification = async (targetToken, title, body, data = {}) => {
             },
         };
 
-        // 4. Kirim notifikasi menggunakan instance admin
         const response = await admin.messaging().send(message);
-        
-        console.log("🚀 Notifikasi terkirim ke:", targetToken.substring(0, 10) + "...");
+        console.log("🚀 Terkirim ke:", targetToken.substring(0, 15) + "...");
         return response;
 
     } catch (error) {
-        // Log error lebih detail jika terjadi kegagalan pada SDK
-        console.error("🔥 FCM Error Details:", error.message);
-        
-        // Cek jika error karena token sudah tidak valid (expired/unregistered)
+        console.error("🔥 FCM Error:", error.message);
+
+        // ✅ Token expired/unregistered → nonaktifkan otomatis di user_devices
         if (error.code === 'messaging/registration-token-not-registered') {
-            console.warn("📌 Info: Token sudah tidak valid, pertimbangkan untuk menghapusnya dari database.");
+            console.warn("📌 Token tidak valid, menonaktifkan di user_devices...");
+            try {
+                await db.query(
+                    'UPDATE user_devices SET is_active = 0 WHERE fcm_token = ?',
+                    [targetToken]
+                );
+                // Sinkron juga ke users supaya kolom fcm_token tidak stale
+                await db.query(
+                    'UPDATE users SET fcm_token = NULL WHERE fcm_token = ?',
+                    [targetToken]
+                );
+                console.log("✅ Token dinonaktifkan.");
+            } catch (dbErr) {
+                console.error("⚠️ Gagal nonaktifkan token:", dbErr.message);
+            }
         }
-        
+
         throw error;
     }
 };
+
+/**
+ * Kirim notifikasi ke satu user berdasarkan user_id
+ * Otomatis ambil semua device aktif dari user_devices (support multi-device)
+ */
+const sendToUser = async (userId, title, body, data = {}) => {
+    if (!userId) return;
+
+    try {
+        const [devices] = await db.query(
+            'SELECT fcm_token FROM user_devices WHERE user_id = ? AND is_active = 1',
+            [userId]
+        );
+
+        if (devices.length === 0) {
+            console.log(`⚠️ [sendToUser] Tidak ada device aktif untuk UID: ${userId}`);
+            return;
+        }
+
+        console.log(`📤 [sendToUser] Kirim ke ${devices.length} device aktif UID: ${userId}`);
+
+        const results = await Promise.allSettled(
+            devices.map(d => sendToToken(d.fcm_token, title, body, data))
+        );
+
+        results.forEach((result, i) => {
+            if (result.status === 'rejected') {
+                console.error(`⚠️ Gagal device ${i + 1} UID ${userId}:`, result.reason?.message);
+            }
+        });
+
+    } catch (error) {
+        console.error(`❌ [sendToUser] Error UID ${userId}:`, error.message);
+    }
+};
+
+/**
+ * Kirim notifikasi ke semua device aktif berdasarkan role
+ * Contoh: sendToRole('admin', ...) → semua admin yang punya device aktif
+ */
+const sendToRole = async (role, title, body, data = {}) => {
+    if (!role) return;
+
+    try {
+        const [devices] = await db.query(
+            `SELECT ud.fcm_token FROM user_devices ud
+             INNER JOIN users u ON u.id = ud.user_id
+             WHERE u.role = ? AND ud.is_active = 1`,
+            [role]
+        );
+
+        if (devices.length === 0) {
+            console.log(`⚠️ [sendToRole] Tidak ada device aktif untuk role: ${role}`);
+            return;
+        }
+
+        console.log(`📤 [sendToRole] Kirim ke ${devices.length} device aktif role: ${role}`);
+
+        const results = await Promise.allSettled(
+            devices.map(d => sendToToken(d.fcm_token, title, body, data))
+        );
+
+        results.forEach((result, i) => {
+            if (result.status === 'rejected') {
+                console.error(`⚠️ Gagal device ${i + 1} role ${role}:`, result.reason?.message);
+            }
+        });
+
+    } catch (error) {
+        console.error(`❌ [sendToRole] Error role ${role}:`, error.message);
+    }
+};
+
+// Alias untuk kompatibilitas mundur — kode lama yang pakai sendPushNotification(token) tetap jalan
+exports.sendPushNotification = sendToToken;
+exports.sendToToken = sendToToken;
+exports.sendToUser = sendToUser;
+exports.sendToRole = sendToRole;

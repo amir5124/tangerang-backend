@@ -1,63 +1,31 @@
 const fs = require('fs');
 const db = require('../config/db');
-const { sendPushNotification } = require('../services/notificationService');
 
-/**
- * HELPER: Parse commission_rate dari DB secara aman
- * DB mengembalikan DECIMAL sebagai string "70.00" — helper ini normalisasi ke integer
- * Contoh: "70.00" → 70, "65.50" → 65.5, null → 70 (fallback)
- */
+// ✅ Tambah import sendToUser & sendToRole
+const { sendToUser, sendToRole } = require('../services/notificationService');
+
 const parseCommission = (raw) => {
     const parsed = parseFloat(raw);
     if (isNaN(parsed) || parsed < 0 || parsed > 100) return 70;
-    // Buang trailing zero: 70.00 → 70, 65.50 → 65.5
     return parseFloat(parsed.toFixed(2));
 };
 
-/**
- * HELPER: Mengirim notifikasi ke semua Admin
- * @param {string} title - Judul Notifikasi
- * @param {string} body - Isi Pesan
- * @param {number|string} orderId - ID Order untuk redirect (Opsional)
- */
+// ✅ notifyAdmins sekarang pakai sendToRole — tidak query users lagi
 const notifyAdmins = async (title, body, orderId = null) => {
     try {
-        const [admins] = await db.execute(
-            "SELECT fcm_token FROM users WHERE role = 'admin' AND fcm_token IS NOT NULL"
-        );
-
-        if (admins.length > 0) {
-            console.log(`[DEBUG] [ADMIN-NOTIF] Mengirim ke ${admins.length} admin untuk Order #${orderId}`);
-
-            const tokens = admins.map(a => a.fcm_token);
-
-            const dataPayload = {
-                type: "ADMIN_ORDER_ALERT",
-                ...(orderId && { orderId: String(orderId) }),
-            };
-
-            for (const token of tokens) {
-                sendPushNotification(token, title, body, dataPayload).catch(err =>
-                    console.error(`[DEBUG] [ADMIN-NOTIF] Gagal kirim ke token admin: ${err.message}`)
-                );
-            }
-        }
+        const dataPayload = {
+            type: "ADMIN_ORDER_ALERT",
+            ...(orderId && { orderId: String(orderId) }),
+        };
+        await sendToRole('admin', title, body, dataPayload);
     } catch (error) {
         console.error(`[DEBUG] [ADMIN-NOTIF] Error:`, error.message);
     }
 };
 
-
-/**
- * HELPER: Fungsi Internal untuk Pencairan Dana
- * - commission_rate diparse lewat parseCommission() agar anti-mismatch "70.00"
- * - netAmount pakai Math.floor (bulatkan ke bawah, aman untuk mitra)
- * - appProfit = grossOriginal - netAmount (selalu konsisten, tidak ada floating gap)
- */
 const releaseFundsToMitra = async (connection, orderId) => {
     console.log(`[DEBUG] === Memulai Proses Pencairan Dana Order #${orderId} ===`);
 
-    // 1. Cek duplikasi transaksi
     const [existingTx] = await connection.execute(
         "SELECT id FROM wallet_transactions WHERE description LIKE ?",
         [`%Order #${orderId}%`]
@@ -68,7 +36,6 @@ const releaseFundsToMitra = async (connection, orderId) => {
         return false;
     }
 
-    // 2. Ambil data order + commission_rate dari stores (dinamis per mitra)
     const [order] = await connection.execute(
         `SELECT 
             o.total_price, 
@@ -89,30 +56,15 @@ const releaseFundsToMitra = async (connection, orderId) => {
         return false;
     }
 
-    const {
-        total_price,
-        discount_amount,
-        mitra_user_id,
-        store_name,
-        commission_rate
-    } = order[0];
+    const { total_price, discount_amount, mitra_user_id, store_name, commission_rate } = order[0];
 
     const paidByCustomer = parseFloat(total_price) || 0;
     const discountVal = parseFloat(discount_amount) || 0;
     const commissionPct = parseCommission(commission_rate);
-
-    // Gross original = nilai jasa asli sebelum voucher → dasar bagi hasil mitra
-    // Mitra tetap dapat % penuh dari nilai asli, voucher ditanggung aplikator
     const grossOriginal = paidByCustomer + discountVal;
-
-    // Mitra dapat % dari nilai asli (grossOriginal), bukan dari yang customer bayar
     const netAmount = Math.floor(grossOriginal * (commissionPct / 100));
-
-    // ✅ FIX: appProfit = kas yang masuk (paidByCustomer) - yang keluar ke mitra (netAmount)
-    // Voucher sudah otomatis memotong bagian aplikator karena kas masuk hanya 90rb
-    // tapi keluar ke mitra 60rb → aplikator bersih 30rb (sudah menanggung voucher 10rb)
     const appProfitBersih = paidByCustomer - netAmount;
-    const appProfitKotor = grossOriginal - netAmount; // 40% dari nilai asli, untuk info saja
+    const appProfitKotor = grossOriginal - netAmount;
     const appPct = parseFloat((100 - commissionPct).toFixed(2));
 
     console.log(`[DEBUG] Rincian Dana Order #${orderId}:
@@ -128,7 +80,6 @@ const releaseFundsToMitra = async (connection, orderId) => {
     - Profit App (bersih)   : Rp${appProfitBersih.toLocaleString('id-ID')}
     --------------------------------------------------`);
 
-    // 3. Update atau Buat Wallet Mitra
     const [walletCheck] = await connection.execute(
         "SELECT id FROM wallets WHERE user_id = ?", [mitra_user_id]
     );
@@ -150,7 +101,6 @@ const releaseFundsToMitra = async (connection, orderId) => {
         walletId = walletCheck[0].id;
     }
 
-    // 4. Catat Transaksi Wallet
     await connection.execute(
         "INSERT INTO wallet_transactions (wallet_id, amount, type, description) VALUES (?, ?, 'credit', ?)",
         [
@@ -160,19 +110,19 @@ const releaseFundsToMitra = async (connection, orderId) => {
         ]
     );
 
-    // 5. Notifikasi Admin
-    if (typeof notifyAdmins === 'function') {
-        notifyAdmins(
-            "Pencairan Dana 💸",
-            `Dana Order #${orderId} sebesar Rp${netAmount.toLocaleString('id-ID')} (${commissionPct}%) telah masuk ke dompet ${store_name}.`,
-            orderId
-        );
-    }
+    notifyAdmins(
+        "Pencairan Dana 💸",
+        `Dana Order #${orderId} sebesar Rp${netAmount.toLocaleString('id-ID')} (${commissionPct}%) telah masuk ke dompet ${store_name}.`,
+        orderId
+    );
 
     console.log(`[DEBUG] === Pencairan Dana Selesai Order #${orderId}. Mitra menerima: Rp${netAmount.toLocaleString('id-ID')} ===`);
-    return netAmount;
+    return { netAmount, mitra_user_id }; // ✅ return mitra_user_id juga untuk keperluan notif
 };
 
+// ============================================================
+// createOrder — tidak ada perubahan logika, hanya notifyAdmins sudah pakai sendToRole
+// ============================================================
 exports.createOrder = async (req, res) => {
     const {
         customer_id, store_id, metode_pembayaran, jenisGedung,
@@ -277,6 +227,9 @@ exports.createOrder = async (req, res) => {
     }
 };
 
+// ============================================================
+// getOrderDetail — tidak ada perubahan
+// ============================================================
 exports.getOrderDetail = async (req, res) => {
     const { id } = req.params;
     try {
@@ -292,7 +245,6 @@ exports.getOrderDetail = async (req, res) => {
                 s.store_name,
                 IFNULL(s.commission_rate, 70) AS commission_rate,
                 (o.total_price + o.discount_amount) as original_subtotal,
-                -- Proyeksi bagi hasil untuk keperluan tampilan detail order
                 FLOOR((o.total_price + o.discount_amount) * (IFNULL(s.commission_rate, 70) / 100)) AS projected_mitra_earning,
                 (SELECT rating FROM reviews WHERE order_id = o.id LIMIT 1) as already_rated,
                 (SELECT JSON_ARRAYAGG(
@@ -311,8 +263,6 @@ exports.getOrderDetail = async (req, res) => {
         }
 
         let data = rows[0];
-
-        // Normalisasi commission_rate agar tidak "70.00" di response
         data.commission_rate = parseCommission(data.commission_rate);
 
         if (data.proof_image_url && !data.proof_image_url.startsWith('http')) {
@@ -325,6 +275,9 @@ exports.getOrderDetail = async (req, res) => {
     }
 };
 
+// ============================================================
+// getUserOrders — tidak ada perubahan
+// ============================================================
 exports.getUserOrders = async (req, res) => {
     try {
         const { userId } = req.params;
@@ -344,6 +297,9 @@ exports.getUserOrders = async (req, res) => {
     }
 };
 
+// ============================================================
+// cancelOrder — tidak ada perubahan
+// ============================================================
 exports.cancelOrder = async (req, res) => {
     const { orderId, reason } = req.body;
     try {
@@ -367,6 +323,9 @@ exports.cancelOrder = async (req, res) => {
     }
 };
 
+// ============================================================
+// getAllOrdersAdmin — tidak ada perubahan
+// ============================================================
 exports.getAllOrdersAdmin = async (req, res) => {
     try {
         const sql = `
@@ -375,7 +334,6 @@ exports.getAllOrdersAdmin = async (req, res) => {
                 o.platform_fee, o.service_fee, o.scheduled_date, o.scheduled_time, 
                 o.order_date, o.cancelled_by, o.cancel_reason, 
                 s.store_name as mitra_name, 
-                -- Tampilkan komisi dan proyeksi earning mitra di dashboard admin
                 IFNULL(s.commission_rate, 70) AS commission_rate,
                 FLOOR((o.total_price + IFNULL(o.discount_amount, 0)) * (IFNULL(s.commission_rate, 70) / 100)) AS mitra_earning,
                 ((o.total_price + IFNULL(o.discount_amount, 0)) - FLOOR((o.total_price + IFNULL(o.discount_amount, 0)) * (IFNULL(s.commission_rate, 70) / 100))) AS app_profit,
@@ -388,7 +346,6 @@ exports.getAllOrdersAdmin = async (req, res) => {
             ORDER BY o.order_date DESC`;
         const [rows] = await db.execute(sql);
 
-        // Normalisasi commission_rate di semua baris
         const normalized = rows.map(r => ({
             ...r,
             commission_rate: parseCommission(r.commission_rate)
@@ -400,6 +357,9 @@ exports.getAllOrdersAdmin = async (req, res) => {
     }
 };
 
+// ============================================================
+// getRefundHistory — tidak ada perubahan
+// ============================================================
 exports.getRefundHistory = async (req, res) => {
     try {
         const sql = `
@@ -419,6 +379,9 @@ exports.getRefundHistory = async (req, res) => {
     }
 };
 
+// ============================================================
+// updateOrderStatus — ✅ notif customer pakai sendToUser
+// ============================================================
 exports.updateOrderStatus = async (req, res) => {
     const { id } = req.params;
     const { status, notes } = req.body;
@@ -427,8 +390,9 @@ exports.updateOrderStatus = async (req, res) => {
     try {
         await connection.beginTransaction();
 
+        // ✅ Tidak perlu ambil fcm_token dari users, cukup ambil customer_id & nama
         const [orderData] = await connection.execute(
-            `SELECT o.status, o.proof_image_url, u.fcm_token, u.full_name 
+            `SELECT o.status, o.proof_image_url, o.customer_id, u.full_name 
              FROM orders o 
              JOIN users u ON o.customer_id = u.id 
              WHERE o.id = ? FOR UPDATE`, [id]
@@ -441,7 +405,7 @@ exports.updateOrderStatus = async (req, res) => {
         }
 
         const currentStatus = orderData[0].status;
-        const customerFcm = orderData[0].fcm_token;
+        const customerId = orderData[0].customer_id;   // ✅ pakai ID, bukan token
         const customerName = orderData[0].full_name;
 
         if (['completed', 'cancelled'].includes(currentStatus)) {
@@ -466,8 +430,7 @@ exports.updateOrderStatus = async (req, res) => {
             }
             statusToSave = 'working';
             responseMessage = "Laporan pengerjaan terkirim. Menunggu konfirmasi pelanggan.";
-        }
-        else if (status === 'cancelled') {
+        } else if (status === 'cancelled') {
             cancelledBy = 'mitra';
             responseMessage = "Pesanan berhasil dibatalkan.";
         }
@@ -495,18 +458,21 @@ exports.updateOrderStatus = async (req, res) => {
             data: { orderId: id, status: statusToSave, cancelled_by: cancelledBy }
         });
 
-        if (customerFcm) {
-            const statusMap = {
-                'accepted': 'telah diterima oleh teknisi',
-                'on_the_way': 'sedang menuju lokasi Anda',
-                'working': 'sedang dikerjakan',
-                'completed': 'telah selesai dikerjakan dan menunggu konfirmasi Anda ✅',
-                'cancelled': 'telah dibatalkan oleh mitra ❌'
-            };
-            const title = status === 'cancelled' ? "Pesanan Dibatalkan ❌" : "Update Pesanan 🔔";
-            const body = `Halo ${customerName}, pesanan Anda ${statusMap[status] || status}`;
-            sendPushNotification(customerFcm, title, body, { orderId: String(id), type: "ORDER_STATUS_UPDATE", status: String(statusToSave) }).catch(e => { });
-        }
+        // ✅ Kirim notif ke customer via sendToUser (dari user_devices)
+        const statusMap = {
+            'accepted': 'telah diterima oleh teknisi',
+            'on_the_way': 'sedang menuju lokasi Anda',
+            'working': 'sedang dikerjakan',
+            'completed': 'telah selesai dikerjakan dan menunggu konfirmasi Anda ✅',
+            'cancelled': 'telah dibatalkan oleh mitra ❌'
+        };
+        const title = status === 'cancelled' ? "Pesanan Dibatalkan ❌" : "Update Pesanan 🔔";
+        const body = `Halo ${customerName}, pesanan Anda ${statusMap[status] || status}`;
+        sendToUser(customerId, title, body, {
+            orderId: String(id),
+            type: "ORDER_STATUS_UPDATE",
+            status: String(statusToSave)
+        }).catch(e => { });
 
     } catch (error) {
         if (connection) await connection.rollback();
@@ -517,6 +483,9 @@ exports.updateOrderStatus = async (req, res) => {
     }
 };
 
+// ============================================================
+// customerCompleteOrder — ✅ notif mitra pakai sendToUser via mitra_user_id
+// ============================================================
 exports.customerCompleteOrder = async (req, res) => {
     const { id } = req.params;
     const { rating, comment, quality, punctuality, communication } = req.body;
@@ -544,26 +513,40 @@ exports.customerCompleteOrder = async (req, res) => {
         );
 
         await connection.execute(
-            `UPDATE stores SET average_rating = (SELECT COALESCE(AVG(rating), 0) FROM reviews WHERE store_id = ?), total_reviews = (SELECT COUNT(*) FROM reviews WHERE store_id = ?) WHERE id = ?`,
+            `UPDATE stores SET 
+                average_rating = (SELECT COALESCE(AVG(rating), 0) FROM reviews WHERE store_id = ?), 
+                total_reviews = (SELECT COUNT(*) FROM reviews WHERE store_id = ?) 
+             WHERE id = ?`,
             [store_id, store_id, store_id]
         );
 
         if (updateResult.affectedRows > 0) {
-            const amountCair = await releaseFundsToMitra(connection, id);
+            const result = await releaseFundsToMitra(connection, id);
 
             notifyAdmins("Order Selesai ✅", `Pelanggan telah mengkonfirmasi penyelesaian Order #${id}. Rating: ${rating}⭐`, id);
 
-            if (amountCair) {
-                const [mitra] = await connection.execute(`SELECT u.fcm_token FROM stores s JOIN users u ON s.user_id = u.id WHERE s.id = ?`, [store_id]);
-                if (mitra[0]?.fcm_token) {
-                    const formatted = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(amountCair);
-                    sendPushNotification(mitra[0].fcm_token, "Dana Masuk! 💰", `Selamat! Pendapatan ${formatted} dari Order #${id} masuk ke dompet.`, { type: 'WALLET_UPDATE', orderId: String(id) }).catch(e => { });
-                }
+            // ✅ Kirim notif ke mitra via sendToUser (dari user_devices, bukan fcm_token langsung)
+            if (result && result.netAmount) {
+                const formatted = new Intl.NumberFormat('id-ID', {
+                    style: 'currency',
+                    currency: 'IDR',
+                    maximumFractionDigits: 0
+                }).format(result.netAmount);
+
+                sendToUser(
+                    result.mitra_user_id,
+                    "Dana Masuk! 💰",
+                    `Selamat! Pendapatan ${formatted} dari Order #${id} masuk ke dompet.`,
+                    { type: 'WALLET_UPDATE', orderId: String(id) }
+                ).catch(e => { });
             }
         }
 
         await connection.commit();
-        res.status(200).json({ success: true, message: updateResult.affectedRows > 0 ? "Pesanan selesai & dana dicairkan." : "Ulasan diperbarui." });
+        res.status(200).json({
+            success: true,
+            message: updateResult.affectedRows > 0 ? "Pesanan selesai & dana dicairkan." : "Ulasan diperbarui."
+        });
 
     } catch (error) {
         if (connection) await connection.rollback();
