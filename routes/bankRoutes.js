@@ -1,13 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const bankController = require('../controllers/bankController');
-const { authenticateToken, isCustomer } = require('../middlewares/authMiddleware');
+const { authenticateToken } = require('../middlewares/authMiddleware');
 
 // 🔐 Terapkan autentikasi untuk SEMUA route di sini
-router.use(authenticateToken);   // <-- WAJIB
-router.use(isCustomer);          // <-- opsional, jika hanya untuk customer
+// Hanya perlu login, tidak perlu cek role spesifik
+router.use(authenticateToken);   // <-- WAJIB untuk semua yang login
 
-// Route untuk bank accounts
+// Route untuk bank accounts - SEMUA user yang sudah login bisa akses
 router.get('/list', bankController.getBankList);
 router.post('/accounts', bankController.addBankAccount);
 router.get('/accounts', bankController.getBankAccounts);
