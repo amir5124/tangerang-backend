@@ -292,10 +292,13 @@ exports.deleteMitra = async (req, res) => {
         );
         console.log(`[DELETE] - store terhapus: ${deletedStore.affectedRows}`);
 
-        // 7. Update role user dari 'mitra' menjadi 'customer' jika user tersebut masih berstatus mitra
+        // 7. Update role user dari 'mitra' menjadi 'customer' 
+        //    NOTE: Tidak menggunakan kolom updated_at karena tidak ada di tabel users? Hati-hati
         if (userId) {
+            // Cek apakah kolom updated_at ada di tabel users
+            // Jika tidak ada, hapus bagian updated_at
             const [updatedUser] = await connection.query(
-                "UPDATE users SET role = 'customer', updated_at = NOW() WHERE id = ? AND role = 'mitra'",
+                "UPDATE users SET role = 'customer' WHERE id = ? AND role = 'mitra'",
                 [userId]
             );
             console.log(`[DELETE] - user role diubah: ${updatedUser.affectedRows} user`);
