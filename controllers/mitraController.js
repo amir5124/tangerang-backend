@@ -225,11 +225,138 @@ exports.updateMitra = async (req, res) => {
 };
 
 exports.deleteMitra = async (req, res) => {
+    const { id } = req.params;
+    let connection;
+
     try {
-        await db.query("DELETE FROM stores WHERE id = ?", [req.params.id]);
-        res.json({ message: "Mitra berhasil dihapus" });
+        // Dapatkan koneksi database
+        connection = await db.getConnection();
+
+        // Mulai transaction
+        await connection.beginTransaction();
+
+        console.log(`[DELETE] Memulai penghapusan mitra dengan ID: ${id}`);
+
+        // 1. Cek apakah mitra ada
+        const [store] = await connection.query(
+            "SELECT id, user_id, store_name FROM stores WHERE id = ?",
+            [id]
+        );
+
+        if (store.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({
+                success: false,
+                message: "Mitra tidak ditemukan"
+            });
+        }
+
+        const storeData = store[0];
+        const userId = storeData.user_id;
+        const storeName = storeData.store_name;
+
+        console.log(`[DELETE] Menghapus mitra: ${storeName} (store_id: ${id}, user_id: ${userId})`);
+
+        // 2. Hapus order_items dari orders mitra
+        const [deletedOrderItems] = await connection.query(
+            "DELETE oi FROM order_items oi INNER JOIN orders o ON oi.order_id = o.id WHERE o.store_id = ?",
+            [id]
+        );
+        console.log(`[DELETE] - order_items terhapus: ${deletedOrderItems.affectedRows}`);
+
+        // 3. Hapus orders mitra
+        const [deletedOrders] = await connection.query(
+            "DELETE FROM orders WHERE store_id = ?",
+            [id]
+        );
+        console.log(`[DELETE] - orders terhapus: ${deletedOrders.affectedRows}`);
+
+        // 4. Hapus reviews mitra
+        const [deletedReviews] = await connection.query(
+            "DELETE FROM reviews WHERE store_id = ?",
+            [id]
+        );
+        console.log(`[DELETE] - reviews terhapus: ${deletedReviews.affectedRows}`);
+
+        // 5. Hapus services milik mitra
+        const [deletedServices] = await connection.query(
+            "DELETE FROM services WHERE store_id = ?",
+            [id]
+        );
+        console.log(`[DELETE] - services terhapus: ${deletedServices.affectedRows}`);
+
+        // 6. Hapus store (mitra) utama
+        const [deletedStore] = await connection.query(
+            "DELETE FROM stores WHERE id = ?",
+            [id]
+        );
+        console.log(`[DELETE] - store terhapus: ${deletedStore.affectedRows}`);
+
+        // 7. Update role user dari 'mitra' menjadi 'customer' jika user tersebut masih berstatus mitra
+        if (userId) {
+            const [updatedUser] = await connection.query(
+                "UPDATE users SET role = 'customer', updated_at = NOW() WHERE id = ? AND role = 'mitra'",
+                [userId]
+            );
+            console.log(`[DELETE] - user role diubah: ${updatedUser.affectedRows} user`);
+
+            // 8. Hapus token FCM user (opsional, agar tidak dapat notifikasi lagi)
+            await connection.query(
+                "UPDATE users SET fcm_token = NULL WHERE id = ?",
+                [userId]
+            );
+        }
+
+        // 9. Hapus wallet mitra (jika ada)
+        if (userId) {
+            const [deletedWallet] = await connection.query(
+                "DELETE FROM wallets WHERE user_id = ?",
+                [userId]
+            );
+            console.log(`[DELETE] - wallet terhapus: ${deletedWallet.affectedRows}`);
+        }
+
+        // Commit transaction jika semua berhasil
+        await connection.commit();
+
+        console.log(`[DELETE] ✅ Mitra ${storeName} (ID: ${id}) berhasil dihapus beserta semua data terkait`);
+
+        res.json({
+            success: true,
+            message: `Mitra "${storeName}" dan semua data terkait berhasil dihapus`,
+            data: {
+                store_id: id,
+                store_name: storeName,
+                user_id: userId,
+                deleted_items: {
+                    order_items: deletedOrderItems.affectedRows,
+                    orders: deletedOrders.affectedRows,
+                    reviews: deletedReviews.affectedRows,
+                    services: deletedServices.affectedRows
+                }
+            }
+        });
+
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        // Rollback transaction jika terjadi error
+        if (connection) {
+            await connection.rollback();
+        }
+
+        console.error("❌ [deleteMitra Error]:", err.message);
+        console.error("Stack trace:", err.stack);
+
+        res.status(500).json({
+            success: false,
+            error: err.message,
+            message: "Terjadi kesalahan saat menghapus mitra"
+        });
+
+    } finally {
+        // Release connection kembali ke pool
+        if (connection) {
+            connection.release();
+        }
     }
 };
 
