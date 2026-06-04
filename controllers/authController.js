@@ -2,7 +2,7 @@ const admin = require('../config/firebaseConfig');
 const db = require('../config/db');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
-const { sendPushNotification } = require('../services/notificationService');
+const { sendToRole } = require('../services/notificationService');
 const { OAuth2Client } = require('google-auth-library');
 const { sendResetPasswordEmail } = require('../utils/mailer');
 const crypto = require('crypto');
@@ -16,11 +16,16 @@ const GOOGLE_CLIENT_ID_CUSTOMER = "206607018424-vpr9bdfrk6oedfcvouf5i5e3lan7ckoh
 
 const client = new OAuth2Client(GOOGLE_CLIENT_ID_ADMIN);
 
+// ─────────────────────────────────────────────
+// HELPER: Generate JWT token
+// ─────────────────────────────────────────────
 const generateToken = (user) => {
     return jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
 };
 
-// ✅ HELPER: Deteksi device_type dari User-Agent (tanpa ubah frontend)
+// ─────────────────────────────────────────────
+// HELPER: Deteksi device_type dari User-Agent
+// ─────────────────────────────────────────────
 const detectDeviceType = (userAgent = '') => {
     const ua = userAgent.toLowerCase();
     if (ua.includes('iphone') || ua.includes('ipad') || ua.includes('ios')) return 'ios';
@@ -28,64 +33,91 @@ const detectDeviceType = (userAgent = '') => {
     return 'android'; // default fallback
 };
 
-// ✅ HELPER: Simpan/update FCM ke tabel users DAN user_devices sekaligus
+// ─────────────────────────────────────────────
+// HELPER: Upsert FCM token ke tabel users + user_devices
+// - Nonaktifkan token lama jika token baru berbeda
+// - ON DUPLICATE KEY supaya tidak ada duplikat row
+// ─────────────────────────────────────────────
 const upsertDeviceToken = async (userId, fcmToken, userAgent = '') => {
-    if (!fcmToken || fcmToken === 'NO_TOKEN' || fcmToken === 'null' || fcmToken.trim() === '') return;
+    if (
+        !fcmToken ||
+        fcmToken === 'NO_TOKEN' ||
+        fcmToken === 'null' ||
+        fcmToken.trim() === '' ||
+        fcmToken.startsWith('WEB_NO_TOKEN')
+    ) {
+        console.log(`📵 [upsertDeviceToken] UID: ${userId} — token tidak valid, dilewati.`);
+        return;
+    }
 
     const deviceType = detectDeviceType(userAgent);
 
     try {
-        // 1. Update fcm_token di tabel users (tetap seperti semula)
+        // 1. Update fcm_token di tabel users
         await db.query('UPDATE users SET fcm_token = ? WHERE id = ?', [fcmToken, userId]);
 
-        // 2. Cek apakah token ini sudah ada di user_devices
-        const [existing] = await db.query(
-            'SELECT id FROM user_devices WHERE user_id = ? AND fcm_token = ?',
+        // 2. Nonaktifkan token LAMA milik user ini (selain token sekarang)
+        await db.query(
+            'UPDATE user_devices SET is_active = 0 WHERE user_id = ? AND fcm_token != ?',
             [userId, fcmToken]
         );
 
-        if (existing.length > 0) {
-            // Token sudah ada → update last_used_at saja
-            await db.query(
-                `UPDATE user_devices 
-                 SET is_active = 1, last_used_at = NOW(), device_type = ?
-                 WHERE user_id = ? AND fcm_token = ?`,
-                [deviceType, userId, fcmToken]
-            );
-            console.log(`📱 [Device Updated] UID: ${userId}, Type: ${deviceType}`);
-        } else {
-            // Token baru → nonaktifkan device lama milik user ini dulu, lalu insert baru
-            await db.query(
-                'UPDATE user_devices SET is_active = 0 WHERE user_id = ?',
-                [userId]
-            );
-            await db.query(
-                `INSERT INTO user_devices (user_id, fcm_token, device_type, is_active, last_used_at)
-                 VALUES (?, ?, ?, 1, NOW())`,
-                [userId, fcmToken, deviceType]
-            );
-            console.log(`📱 [Device Inserted] UID: ${userId}, Type: ${deviceType}`);
-        }
+        // 3. Upsert token baru (tidak duplikat karena UNIQUE KEY di DB)
+        await db.query(`
+            INSERT INTO user_devices (user_id, fcm_token, device_type, is_active, last_used_at)
+            VALUES (?, ?, ?, 1, NOW())
+            ON DUPLICATE KEY UPDATE
+                is_active     = 1,
+                device_type   = VALUES(device_type),
+                last_used_at  = NOW()
+        `, [userId, fcmToken, deviceType]);
+
+        console.log(`📱 [upsertDeviceToken] UID: ${userId} | Type: ${deviceType} — OK`);
     } catch (err) {
-        // Jangan sampai error device tracking menghentikan proses login/register
-        console.error('⚠️ [upsertDeviceToken Error]:', err.message);
+        console.error(`⚠️ [upsertDeviceToken Error] UID: ${userId}:`, err.message);
+    }
+};
+
+// ─────────────────────────────────────────────
+// HELPER: Kirim notifikasi ke semua admin
+// Menggunakan sendToRole supaya tidak bergantung
+// pada fcm_token kolom users (memakai user_devices)
+// ─────────────────────────────────────────────
+const notifyAdminNewUser = async (fullName, role, userId) => {
+    const tag = `[notifyAdminNewUser][UID:${userId}]`;
+    try {
+        await sendToRole(
+            'admin',
+            '✨ Pengguna Baru Berhasil Daftar',
+            `User baru ${fullName} (${role}) telah bergabung.`,
+            {
+                type: 'NEW_USER',
+                userId: String(userId),
+                role,
+                screen: '/(tabs)/profile',
+            }
+        );
+        console.log(`${tag} ✅ Notif admin terkirim`);
+    } catch (err) {
+        console.error(`${tag} ❌ Gagal kirim notif admin:`, err.message);
     }
 };
 
 // ============================================================
-// REGISTER
+// REGISTER (email & password)
 // ============================================================
 exports.register = async (req, res) => {
     const { full_name, email, phone_number, password, role, fcm_token } = req.body;
+    const tag = '[register]';
 
     try {
+        // Cek duplikat email / no HP
         const [existingUser] = await db.query(
             'SELECT id FROM users WHERE email = ? OR phone_number = ?',
             [email, phone_number]
         );
-
         if (existingUser.length > 0) {
-            return res.status(400).json({ success: false, message: "Email atau Nomor HP sudah digunakan" });
+            return res.status(400).json({ success: false, message: 'Email atau Nomor HP sudah digunakan' });
         }
 
         const hashedPassword = await bcrypt.hash(password, 10);
@@ -94,55 +126,37 @@ exports.register = async (req, res) => {
             'INSERT INTO users (full_name, email, phone_number, password, role, fcm_token, profile_picture) VALUES (?, ?, ?, ?, ?, ?, ?)',
             [full_name, email, phone_number, hashedPassword, role, fcm_token || null, null]
         );
-
         const userId = userResult.insertId;
-        let storeId = null;
+        console.log(`${tag} 👤 User baru dibuat — UID: ${userId}, Role: ${role}`);
 
-        // Wallet untuk semua role
+        // Buat wallet untuk semua role
         await db.query('INSERT INTO wallets (user_id, balance) VALUES (?, 0)', [userId]);
-        console.log(`💳 [Wallet Created] Wallet otomatis dibuat untuk UID: ${userId}`);
+        console.log(`${tag} 💳 Wallet dibuat untuk UID: ${userId}`);
 
+        // Buat toko jika mitra
+        let storeId = null;
         if (role === 'mitra') {
             const [storeResult] = await db.query(
-                `INSERT INTO stores (user_id, store_name, category, address, latitude, longitude, approval_status, is_active) 
+                `INSERT INTO stores (user_id, store_name, category, address, latitude, longitude, approval_status, is_active)
                  VALUES (?, ?, ?, ?, 0, 0, 'pending', 0)`,
                 [userId, `${full_name} Service`, 'ac', 'Alamat belum diatur']
             );
             storeId = storeResult.insertId;
+            console.log(`${tag} 🏪 Toko dibuat — Store ID: ${storeId}`);
         }
 
-        // ✅ Simpan ke user_devices juga
+        // Simpan device token
         await upsertDeviceToken(userId, fcm_token, req.headers['user-agent']);
 
-        const token = jwt.sign({ id: userId, role: role }, JWT_SECRET, { expiresIn: '30d' });
+        // Notif ke admin (fire-and-forget, tidak block response)
+        notifyAdminNewUser(full_name, role, userId).catch(() => { });
 
-        try {
-            const [admins] = await db.query(
-                "SELECT fcm_token FROM users WHERE role = 'admin' AND fcm_token IS NOT NULL"
-            );
+        const token = generateToken({ id: userId, role });
 
-            if (admins.length > 0) {
-                const title = "Pengguna Baru Berhasil Daftar";
-                const body = `User baru ${full_name} (${role}) telah bergabung.`;
-
-                for (const admin of admins) {
-                    await sendPushNotification(admin.fcm_token, title, body, {
-                        type: "NEW_USER",
-                        userId: String(userId),
-                        role: role,
-                        screen: "/(tabs)/profile",
-                    });
-                }
-            }
-        } catch (fcmErr) {
-            console.error("⚠️ FCM Admin (Register) Error Detail:", fcmErr);
-        }
-
-        console.log(`✨ [Register Success] User: ${email}, Role: ${role}`);
-
-        res.status(201).json({
+        console.log(`${tag} ✅ Register berhasil — ${email}`);
+        return res.status(201).json({
             success: true,
-            message: "Registrasi berhasil",
+            message: 'Registrasi berhasil',
             token,
             user: {
                 id: userId,
@@ -151,95 +165,102 @@ exports.register = async (req, res) => {
                 phone_number,
                 role,
                 profile_picture: null,
-                store_id: storeId
-            }
+                store_id: storeId,
+            },
         });
 
     } catch (error) {
-        console.error("❌ Register Error:", error.message);
-        res.status(500).json({ success: false, message: "Gagal register", error: error.message });
+        console.error(`${tag} ❌ Error:`, error.message);
+        return res.status(500).json({ success: false, message: 'Gagal register', error: error.message });
     }
 };
 
 // ============================================================
-// GOOGLE AUTH
+// GOOGLE AUTH (register + login via Google)
 // ============================================================
 exports.googleAuth = async (req, res) => {
     const { idToken, role, fcm_token, targetRole } = req.body;
+    const tag = '[googleAuth]';
 
-    console.log("🔍 [DEBUG GOOGLE] Incoming Request:", { targetRole, providedRole: role, hasFcmToken: !!fcm_token });
+    console.log(`${tag} 🔍 Incoming — targetRole: ${targetRole}, providedRole: ${role}, hasFcm: ${!!fcm_token}`);
 
     try {
+        // Verifikasi Google ID token
         const ticket = await client.verifyIdToken({
-            idToken: idToken,
+            idToken,
             audience: [GOOGLE_CLIENT_ID_ADMIN, GOOGLE_CLIENT_ID_CUSTOMER],
         });
+        const { email, name, picture } = ticket.getPayload();
+        console.log(`${tag} ✅ Token verified — ${email}`);
 
-        const payload = ticket.getPayload();
-        const { email, name, picture } = payload;
-
-        console.log(`🔍 [DEBUG GOOGLE] Token Verified. Email: ${email}, Name: ${name}`);
-
-        const [rows] = await db.query("SELECT * FROM users WHERE email = ?", [email]);
+        const [rows] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
         let user = rows[0];
 
         if (!user) {
-            console.log(`🆕 [DEBUG GOOGLE] User ${email} tidak ditemukan. Memulai proses REGISTER.`);
+            // ── REGISTER via Google ──────────────────────────
+            console.log(`${tag} 🆕 User tidak ditemukan, proses REGISTER — ${email}`);
 
             const [result] = await db.query(
-                "INSERT INTO users (full_name, email, phone_number, password, role, fcm_token, profile_picture) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                'INSERT INTO users (full_name, email, phone_number, password, role, fcm_token, profile_picture) VALUES (?, ?, ?, ?, ?, ?, ?)',
                 [name, email, null, 'GOOGLE_AUTH', role || 'customer', fcm_token || null, picture || null]
             );
-
             const userId = result.insertId;
-            console.log(`✅ [DEBUG GOOGLE] User baru berhasil dibuat. UID: ${userId}`);
+            console.log(`${tag} 👤 User baru dibuat — UID: ${userId}`);
 
+            // Buat wallet
             await db.query('INSERT INTO wallets (user_id, balance) VALUES (?, 0)', [userId]);
-            console.log(`💳 [DEBUG GOOGLE] Wallet otomatis dibuat untuk UID: ${userId}`);
+            console.log(`${tag} 💳 Wallet dibuat untuk UID: ${userId}`);
 
+            // Buat toko jika mitra
             if (role === 'mitra') {
-                console.log(`🏪 [DEBUG GOOGLE] Inisialisasi toko untuk mitra UID: ${userId}`);
                 await db.query(
-                    `INSERT INTO stores (user_id, store_name, category, address, latitude, longitude, approval_status, is_active) 
+                    `INSERT INTO stores (user_id, store_name, category, address, latitude, longitude, approval_status, is_active)
                      VALUES (?, ?, ?, ?, 0, 0, 'pending', 0)`,
                     [userId, `${name} Service`, 'ac', 'Alamat belum diatur']
                 );
+                console.log(`${tag} 🏪 Toko dibuat untuk mitra UID: ${userId}`);
             }
 
-            // ✅ Simpan ke user_devices juga
+            // Simpan device token
             await upsertDeviceToken(userId, fcm_token, req.headers['user-agent']);
 
-            const [newUser] = await db.query("SELECT * FROM users WHERE id = ?", [userId]);
-            user = newUser[0];
-        } else {
-            console.log(`🔑 [DEBUG GOOGLE] User ${email} ditemukan. Memulai proses LOGIN.`);
+            // ✅ Notif admin — sama seperti register biasa
+            notifyAdminNewUser(name, role || 'customer', userId).catch(() => { });
 
+            // Ambil data user lengkap
+            const [newUser] = await db.query('SELECT * FROM users WHERE id = ?', [userId]);
+            user = newUser[0];
+
+        } else {
+            // ── LOGIN via Google ─────────────────────────────
+            console.log(`${tag} 🔑 User ditemukan, proses LOGIN — ${email}`);
+
+            // Cek role mismatch
             if (targetRole && user.role !== targetRole) {
-                console.warn(`🚫 [DEBUG GOOGLE] Role Mismatch for ${email}. Access Blocked.`);
+                console.warn(`${tag} 🚫 Role mismatch — akun adalah ${user.role}, dicoba sebagai ${targetRole}`);
                 return res.status(403).json({
                     success: false,
-                    message: `Akses Ditolak. Akun Google ini terdaftar sebagai ${user.role}.`
+                    message: `Akses Ditolak. Akun Google ini terdaftar sebagai ${user.role}.`,
                 });
             }
 
+            // Update device token jika ada
             if (fcm_token) {
-                console.log(`📱 [DEBUG GOOGLE] Updating FCM Token for UID: ${user.id}`);
-                // ✅ Pakai helper supaya update ke users + user_devices sekaligus
                 await upsertDeviceToken(user.id, fcm_token, req.headers['user-agent']);
             }
         }
 
+        // Ambil store_id jika mitra
         let storeId = null;
         if (user.role === 'mitra') {
             const [stores] = await db.query('SELECT id FROM stores WHERE user_id = ?', [user.id]);
             storeId = stores[0]?.id || null;
-            console.log(`🏪 [DEBUG GOOGLE] Store ID ditemukan: ${storeId}`);
         }
 
         const token = generateToken(user);
-        console.log(`🚀 [DEBUG GOOGLE] Login Success. Sending response for UID: ${user.id}`);
+        console.log(`${tag} 🚀 Berhasil — UID: ${user.id}`);
 
-        res.status(200).json({
+        return res.status(200).json({
             success: true,
             token,
             user: {
@@ -249,30 +270,30 @@ exports.googleAuth = async (req, res) => {
                 role: user.role,
                 phone_number: user.phone_number,
                 profile_picture: user.profile_picture,
-                store_id: storeId
-            }
+                store_id: storeId,
+            },
         });
 
     } catch (error) {
-        console.error("❌ [DEBUG GOOGLE] FATAL ERROR:", error.message);
-        res.status(401).json({
+        console.error(`${tag} ❌ FATAL:`, error.message);
+        return res.status(401).json({
             success: false,
-            message: "Token Google tidak valid atau aplikasi tidak terdaftar",
-            error: error.message
+            message: 'Token Google tidak valid atau aplikasi tidak terdaftar',
+            error: error.message,
         });
     }
 };
 
 // ============================================================
-// LOGIN
+// LOGIN (email & password)
 // ============================================================
 exports.login = async (req, res) => {
     const { email, password, fcm_token, targetRole } = req.body;
-    const genericError = "Email atau Password salah";
+    const tag = '[login]';
+    const genericError = 'Email atau Password salah';
 
     try {
         const [users] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
-
         if (users.length === 0) {
             return res.status(401).json({ success: false, message: genericError });
         }
@@ -284,15 +305,16 @@ exports.login = async (req, res) => {
             return res.status(401).json({ success: false, message: genericError });
         }
 
+        // Cek role mismatch
         if (targetRole && user.role !== targetRole) {
-            console.warn(`🚫 [Role Mismatch] UID ${user.id} mencoba masuk sebagai ${targetRole}`);
+            console.warn(`${tag} 🚫 Role mismatch UID: ${user.id} — mencoba login sebagai ${targetRole}`);
             return res.status(403).json({
                 success: false,
-                message: `Akses Ditolak. Akun Anda terdaftar sebagai ${user.role}.`
+                message: `Akses Ditolak. Akun Anda terdaftar sebagai ${user.role}.`,
             });
         }
 
-        // ✅ Ganti logika FCM lama dengan helper baru (update users + user_devices)
+        // Update device token
         await upsertDeviceToken(user.id, fcm_token, req.headers['user-agent']);
 
         let storeData = null;
@@ -301,9 +323,10 @@ exports.login = async (req, res) => {
             storeData = stores[0] || null;
         }
 
-        const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
+        const token = generateToken(user);
+        console.log(`${tag} ✅ Login berhasil — UID: ${user.id}, Role: ${user.role}`);
 
-        res.json({
+        return res.json({
             success: true,
             token,
             user: {
@@ -313,13 +336,13 @@ exports.login = async (req, res) => {
                 role: user.role,
                 profile_picture: user.profile_picture,
                 store_id: storeData ? storeData.id : null,
-                is_active: storeData ? storeData.is_active : (user.role === 'customer' ? 1 : 0)
-            }
+                is_active: storeData ? storeData.is_active : (user.role === 'customer' ? 1 : 0),
+            },
         });
 
     } catch (error) {
-        console.error("❌ [Login Fatal Error]:", error.message);
-        res.status(500).json({ success: false, message: "Terjadi kesalahan internal" });
+        console.error(`${tag} ❌ Fatal:`, error.message);
+        return res.status(500).json({ success: false, message: 'Terjadi kesalahan internal' });
     }
 };
 
@@ -328,62 +351,57 @@ exports.login = async (req, res) => {
 // ============================================================
 exports.logout = async (req, res) => {
     const userId = req.user ? req.user.id : req.body.userId;
+    const tag = `[logout][UID:${userId}]`;
 
     try {
+        // Hapus fcm_token dari tabel users
         await db.query('UPDATE users SET fcm_token = NULL WHERE id = ?', [userId]);
 
-        // ✅ Nonaktifkan semua device user ini saat logout
-        await db.query(
-            'UPDATE user_devices SET is_active = 0 WHERE user_id = ?',
-            [userId]
-        );
+        // Nonaktifkan semua device user ini
+        await db.query('UPDATE user_devices SET is_active = 0 WHERE user_id = ?', [userId]);
 
-        console.log(`🚪 [Logout Success] UID: ${userId}`);
+        console.log(`${tag} 🚪 Logout berhasil`);
+        return res.json({ success: true, message: 'Logout berhasil' });
 
-        res.json({
-            success: true,
-            message: "Logout berhasil"
-        });
     } catch (error) {
-        console.error("❌ Logout Error:", error.message);
-        res.status(500).json({ success: false, error: error.message });
+        console.error(`${tag} ❌ Error:`, error.message);
+        return res.status(500).json({ success: false, error: error.message });
     }
 };
 
 // ============================================================
-// UPDATE PROFILE — tidak diubah sama sekali
+// UPDATE PROFILE
 // ============================================================
 exports.updateProfile = async (req, res) => {
-    console.log("\n========== DEBUG UPDATE PROFILE ==========");
-    console.log("[PAYLOAD BODY]:", req.body);
-    console.log("[PAYLOAD FILE]:", req.file ? req.file.filename : "TIDAK ADA FILE");
+    const tag = '[updateProfile]';
+    console.log(`\n${tag} ========== DEBUG ==========`);
+    console.log(`${tag} Body:`, req.body);
+    console.log(`${tag} File:`, req.file ? req.file.filename : 'TIDAK ADA FILE');
 
     const { user_id, full_name, email, phone_number } = req.body;
 
     try {
         if (!user_id) {
-            return res.status(400).json({ success: false, message: "User ID wajib ada" });
+            return res.status(400).json({ success: false, message: 'User ID wajib ada' });
         }
 
         const [currentUser] = await db.query('SELECT profile_picture FROM users WHERE id = ?', [user_id]);
         if (currentUser.length === 0) {
-            return res.status(404).json({ success: false, message: "User tidak ditemukan" });
+            return res.status(404).json({ success: false, message: 'User tidak ditemukan' });
         }
 
         let final_profile_picture = currentUser[0].profile_picture;
-
         if (req.file) {
             final_profile_picture = `/uploads/profiles/${req.file.filename}`;
-            console.log(`[SUCCESS] Menggunakan foto baru: ${final_profile_picture}`);
+            console.log(`${tag} 📸 Foto baru: ${final_profile_picture}`);
         }
 
         const [existing] = await db.query(
             'SELECT id FROM users WHERE (email = ? OR phone_number = ?) AND id != ?',
             [email, phone_number, user_id]
         );
-
         if (existing.length > 0) {
-            return res.status(400).json({ success: false, message: "Email/No HP sudah dipakai orang lain" });
+            return res.status(400).json({ success: false, message: 'Email/No HP sudah dipakai orang lain' });
         }
 
         await db.query(
@@ -391,79 +409,73 @@ exports.updateProfile = async (req, res) => {
             [full_name, email, phone_number, final_profile_picture, user_id]
         );
 
-        res.json({
+        return res.json({
             success: true,
-            message: "Profil diperbarui",
-            user: {
-                id: user_id,
-                full_name,
-                email,
-                phone_number,
-                profile_picture: final_profile_picture
-            }
+            message: 'Profil diperbarui',
+            user: { id: user_id, full_name, email, phone_number, profile_picture: final_profile_picture },
         });
 
     } catch (error) {
-        console.error("❌ Error:", error.message);
-        res.status(500).json({ success: false, message: "Server error" });
+        console.error(`${tag} ❌ Error:`, error.message);
+        return res.status(500).json({ success: false, message: 'Server error' });
     }
 };
 
 // ============================================================
-// CHANGE PASSWORD — tidak diubah sama sekali
+// CHANGE PASSWORD
 // ============================================================
 exports.changePassword = async (req, res) => {
     const { user_id, old_password, new_password } = req.body;
+    const tag = `[changePassword][UID:${user_id}]`;
 
     try {
         const [rows] = await db.query('SELECT password FROM users WHERE id = ?', [user_id]);
-        if (rows.length === 0) return res.status(404).json({ success: false, message: "User tidak ditemukan" });
-
-        const user = rows[0];
-
-        const isMatch = await bcrypt.compare(old_password, user.password);
-        if (!isMatch) {
-            return res.status(400).json({ success: false, message: "Password lama salah" });
+        if (rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'User tidak ditemukan' });
         }
 
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(new_password, salt);
+        const isMatch = await bcrypt.compare(old_password, rows[0].password);
+        if (!isMatch) {
+            return res.status(400).json({ success: false, message: 'Password lama salah' });
+        }
 
+        const hashedPassword = await bcrypt.hash(new_password, await bcrypt.genSalt(10));
         await db.query('UPDATE users SET password = ? WHERE id = ?', [hashedPassword, user_id]);
 
-        res.json({ success: true, message: "Password berhasil diperbarui" });
+        console.log(`${tag} ✅ Password diperbarui`);
+        return res.json({ success: true, message: 'Password berhasil diperbarui' });
+
     } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
+        console.error(`${tag} ❌ Error:`, error.message);
+        return res.status(500).json({ success: false, message: error.message });
     }
 };
 
 // ============================================================
-// GET PROFILE — tidak diubah sama sekali
+// GET PROFILE
 // ============================================================
 exports.getProfile = async (req, res) => {
     const userId = req.user.id;
+    const tag = `[getProfile][UID:${userId}]`;
 
     try {
-        console.log(`\n🔍 [DEBUG] Fetching Profile for UID: ${userId}`);
-
         const [rows] = await db.query(
             `SELECT u.id, u.full_name, u.email, u.phone_number, u.role, u.fcm_token, u.profile_picture,
-             s.id AS store_id, s.is_active 
-             FROM users u 
-             LEFT JOIN stores s ON u.id = s.user_id 
+                    s.id AS store_id, s.is_active
+             FROM users u
+             LEFT JOIN stores s ON u.id = s.user_id
              WHERE u.id = ?`,
             [userId]
         );
 
         if (rows.length === 0) {
-            console.error(`❌ [DEBUG] User not found for UID: ${userId}`);
-            return res.status(404).json({ success: false, message: "User tidak ditemukan" });
+            return res.status(404).json({ success: false, message: 'User tidak ditemukan' });
         }
 
         const user = rows[0];
-        console.log(`✅ [DEBUG] Profile data retrieved for: ${user.email}`);
+        console.log(`${tag} ✅ Profile diambil — ${user.email}`);
 
-        res.json({
+        return res.json({
             success: true,
             user: {
                 id: user.id,
@@ -474,30 +486,33 @@ exports.getProfile = async (req, res) => {
                 fcm_token: user.fcm_token,
                 profile_picture: user.profile_picture,
                 store_id: user.store_id,
-                is_active: user.role === 'customer' ? 1 : (user.is_active || 0)
-            }
+                is_active: user.role === 'customer' ? 1 : (user.is_active || 0),
+            },
         });
 
     } catch (error) {
-        console.error("❌ [DEBUG] Get Profile Error:", error.message);
-        res.status(500).json({ success: false, message: "Terjadi kesalahan server" });
+        console.error(`${tag} ❌ Error:`, error.message);
+        return res.status(500).json({ success: false, message: 'Terjadi kesalahan server' });
     }
 };
 
 // ============================================================
-// REQUEST RESET — tidak diubah sama sekali
+// REQUEST RESET PASSWORD
 // ============================================================
 exports.requestReset = async (req, res) => {
     const { email } = req.body;
+    const tag = '[requestReset]';
+
     try {
         const [user] = await db.query('SELECT id, full_name FROM users WHERE email = ?', [email]);
 
+        // Selalu response sama — tidak bocorkan info email terdaftar atau tidak
         if (user.length === 0) {
-            return res.json({ success: true, message: "Jika email terdaftar, instruksi reset akan dikirim." });
+            return res.json({ success: true, message: 'Jika email terdaftar, instruksi reset akan dikirim.' });
         }
 
         const token = crypto.randomBytes(32).toString('hex');
-        const expiry = new Date(Date.now() + 3600000);
+        const expiry = new Date(Date.now() + 3600000); // 1 jam
 
         await db.query(
             'UPDATE users SET reset_token = ?, reset_expiry = ? WHERE email = ?',
@@ -506,18 +521,21 @@ exports.requestReset = async (req, res) => {
 
         await sendResetPasswordEmail(email, user[0].full_name, token);
 
-        res.json({ success: true, message: "Instruksi reset password telah dikirim ke email." });
+        console.log(`${tag} ✅ Email reset terkirim ke ${email}`);
+        return res.json({ success: true, message: 'Instruksi reset password telah dikirim ke email.' });
+
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ success: false, message: "Terjadi kesalahan sistem." });
+        console.error(`${tag} ❌ Error:`, error.message);
+        return res.status(500).json({ success: false, message: 'Terjadi kesalahan sistem.' });
     }
 };
 
 // ============================================================
-// RESET PASSWORD — tidak diubah sama sekali
+// RESET PASSWORD
 // ============================================================
 exports.resetPassword = async (req, res) => {
     const { token, newPassword } = req.body;
+    const tag = '[resetPassword]';
 
     try {
         const [user] = await db.query(
@@ -528,27 +546,22 @@ exports.resetPassword = async (req, res) => {
         if (user.length === 0) {
             return res.status(400).json({
                 success: false,
-                message: "Token tidak valid atau sudah kedaluwarsa. Silakan minta link baru."
+                message: 'Token tidak valid atau sudah kedaluwarsa. Silakan minta link baru.',
             });
         }
 
-        const salt = await bcrypt.genSalt(10);
-        const hashedPassword = await bcrypt.hash(newPassword, salt);
+        const hashedPassword = await bcrypt.hash(newPassword, await bcrypt.genSalt(10));
 
         await db.query(
             'UPDATE users SET password = ?, reset_token = NULL, reset_expiry = NULL WHERE id = ?',
             [hashedPassword, user[0].id]
         );
 
-        res.json({
-            success: true,
-            message: "Password Anda berhasil diperbarui. Silakan login."
-        });
+        console.log(`${tag} ✅ Password berhasil direset untuk UID: ${user[0].id}`);
+        return res.json({ success: true, message: 'Password Anda berhasil diperbarui. Silakan login.' });
+
     } catch (error) {
-        console.error("❌ Reset Password Error:", error);
-        res.status(500).json({
-            success: false,
-            message: "Terjadi kesalahan server saat memperbarui password."
-        });
+        console.error(`${tag} ❌ Error:`, error.message);
+        return res.status(500).json({ success: false, message: 'Terjadi kesalahan server saat memperbarui password.' });
     }
 };
