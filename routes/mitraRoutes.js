@@ -19,25 +19,31 @@ const upload = multer({
     limits: { fileSize: 5 * 1024 * 1024 }
 });
 
-
+// ==========================================
+// PUBLIC ENDPOINTS (Tanpa Auth)
+// ==========================================
 router.get('/', mitraController.getAllMitra);
 router.get('/:id', mitraController.getMitraDetail);
-
 router.get('/dashboard/:id', mitraController.getMitraDashboard);
 router.get('/orders-history/:store_id', mitraController.getAllHistory);
-router.get('/profile/:id', authenticateToken, mitraController.getStoreProfile);
-router.put('/profile/:id', authenticateToken, upload.single('image'), mitraController.updateStoreProfile);
-router.put('/manage/:id', authenticateToken, mitraController.updateMitra);
-router.put('/approve/:id', mitraController.approveMitra);
-router.put('/reject/:id', mitraController.rejectMitra);
-router.put('/revert-rejected-to-pending/:id', mitraController.revertRejectedToPending);
-router.put('/revert-approved-to-pending/:id', mitraController.revertApprovedToPending);
-router.put('/:id/commission', mitraController.updateCommission);
-router.delete('/:id', authenticateToken, mitraController.deleteMitra);
 
-router.get('/admin/all-users-with-mitra', mitraController.getAllUsersWithMitraStatus);
-router.put('/reject-mitra-user/:id', mitraController.rejectMitraUser);
-router.post('/create-store-from-user', mitraController.createStoreFromUser);
-router.put('/approve-mitra-user/:id', mitraController.approveMitraUser);
+// ✅ PROFILE ENDPOINTS - PUBLIC (tanpa authenticateToken)
+router.get('/profile/:id', mitraController.getStoreProfile);
+router.put('/profile/:id', upload.single('image'), mitraController.updateStoreProfile);
+
+// ==========================================
+// PROTECTED ENDPOINTS (Dengan Auth)
+// ==========================================
+router.put('/manage/:id', authenticateToken, mitraController.updateMitra);
+router.put('/approve/:id', authenticateToken, mitraController.approveMitra);
+router.put('/reject/:id', authenticateToken, mitraController.rejectMitra);
+router.put('/revert-rejected-to-pending/:id', authenticateToken, mitraController.revertRejectedToPending);
+router.put('/revert-approved-to-pending/:id', authenticateToken, mitraController.revertApprovedToPending);
+router.put('/:id/commission', authenticateToken, mitraController.updateCommission);
+router.delete('/:id', authenticateToken, mitraController.deleteMitra);
+router.get('/admin/all-users-with-mitra', authenticateToken, mitraController.getAllUsersWithMitraStatus);
+router.put('/reject-mitra-user/:id', authenticateToken, mitraController.rejectMitraUser);
+router.post('/create-store-from-user', authenticateToken, mitraController.createStoreFromUser);
+router.put('/approve-mitra-user/:id', authenticateToken, mitraController.approveMitraUser);
 
 module.exports = router;
