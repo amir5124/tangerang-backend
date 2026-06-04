@@ -1,17 +1,41 @@
 // /app/services/notificationService.js
+// ============================================================
+// FCM Notification Service — Final Version
+// Support: Expo React Native (Android & iOS)
+// Fix: double notif, cold start tap, detailed logging
+// ============================================================
 
 const admin = require('../config/firebaseConfig');
 const db = require('../config/db');
 
-/**
- * INTI: Kirim ke satu FCM token spesifik
- * Tetap dieksport agar kompatibel dengan kode lama yang masih pakai sendPushNotification(token, ...)
- */
+// ─────────────────────────────────────────────
+// HELPER: format token untuk log (aman)
+// ─────────────────────────────────────────────
+const shortToken = (token) =>
+    token ? `${token.substring(0, 20)}...${token.slice(-6)}` : 'NULL';
+
+// ─────────────────────────────────────────────
+// INTI: Kirim ke satu FCM token spesifik
+// ─────────────────────────────────────────────
 const sendToToken = async (targetToken, title, body, data = {}) => {
-    if (!targetToken || targetToken === 'null' || targetToken === '' || targetToken === 'NO_TOKEN') {
-        console.log("⚠️ Skip: No valid FCM Token.");
+    const tag = '[sendToToken]';
+
+    if (
+        !targetToken ||
+        targetToken === 'null' ||
+        targetToken === '' ||
+        targetToken === 'NO_TOKEN' ||
+        targetToken === 'undefined'
+    ) {
+        console.log(`${tag} ⚠️  Skip — token tidak valid: "${targetToken}"`);
         return null;
     }
+
+    console.log(`${tag} 📦 Mempersiapkan pesan...`);
+    console.log(`${tag}    Token   : ${shortToken(targetToken)}`);
+    console.log(`${tag}    Title   : ${title}`);
+    console.log(`${tag}    Body    : ${body}`);
+    console.log(`${tag}    Data    : ${JSON.stringify(data)}`);
 
     try {
         const stringData = Object.keys(data).reduce((acc, key) => {
@@ -19,52 +43,63 @@ const sendToToken = async (targetToken, title, body, data = {}) => {
             return acc;
         }, {});
 
+        // click_action untuk Expo supaya tap notif saat app killed/background
+        // bisa di-handle di getInitialMessage() dan onMessageOpenedApp()
+        stringData['click_action'] = 'FLUTTER_NOTIFICATION_CLICK';
+
         const message = {
             token: targetToken,
             notification: { title, body },
             data: stringData,
             android: {
-                priority: "high",
+                priority: 'high',
                 notification: {
-                    sound: "default",
-                    channelId: "orders",
-                    priority: "high",
-                    clickAction: "TOP_STORY_ACTIVITY",
+                    sound: 'default',
+                    channelId: 'orders',
+                    priority: 'high',
+                    // ❌ DIHAPUS: clickAction: "TOP_STORY_ACTIVITY"
+                    //    Itu nama Activity Android native, tidak berlaku di Expo.
+                    //    Expo pakai data.click_action di atas.
                 },
             },
             apns: {
+                headers: {
+                    'apns-priority': '10',
+                },
                 payload: {
                     aps: {
-                        sound: "default",
+                        sound: 'default',
                         contentAvailable: true,
+                        badge: 1,
                     },
                 },
             },
         };
 
         const response = await admin.messaging().send(message);
-        console.log("🚀 Terkirim ke:", targetToken.substring(0, 15) + "...");
+        console.log(`${tag} ✅ Berhasil — messageId: ${response}`);
+        console.log(`${tag}    Token : ${shortToken(targetToken)}`);
         return response;
 
     } catch (error) {
-        console.error("🔥 FCM Error:", error.message);
+        console.error(`${tag} 🔥 FCM Error — code: ${error.code}`);
+        console.error(`${tag}    Message : ${error.message}`);
+        console.error(`${tag}    Token   : ${shortToken(targetToken)}`);
 
-        // ✅ Token expired/unregistered → nonaktifkan otomatis di user_devices
         if (error.code === 'messaging/registration-token-not-registered') {
-            console.warn("📌 Token tidak valid, menonaktifkan di user_devices...");
+            console.warn(`${tag} 🗑️  Token tidak terdaftar, menonaktifkan di DB...`);
             try {
-                await db.query(
+                const [r1] = await db.query(
                     'UPDATE user_devices SET is_active = 0 WHERE fcm_token = ?',
                     [targetToken]
                 );
-                // Sinkron juga ke users supaya kolom fcm_token tidak stale
-                await db.query(
+                const [r2] = await db.query(
                     'UPDATE users SET fcm_token = NULL WHERE fcm_token = ?',
                     [targetToken]
                 );
-                console.log("✅ Token dinonaktifkan.");
+                console.log(`${tag} ✅ Token dinonaktifkan — user_devices: ${r1.affectedRows} baris, users: ${r2.affectedRows} baris`);
             } catch (dbErr) {
-                console.error("⚠️ Gagal nonaktifkan token:", dbErr.message);
+                console.error(`${tag} ⚠️  Gagal nonaktifkan token di DB:`, dbErr.message);
             }
         }
 
@@ -72,80 +107,111 @@ const sendToToken = async (targetToken, title, body, data = {}) => {
     }
 };
 
-/**
- * Kirim notifikasi ke satu user berdasarkan user_id
- * Otomatis ambil semua device aktif dari user_devices (support multi-device)
- */
+// ─────────────────────────────────────────────
+// Kirim ke SATU USER berdasarkan user_id
+// ─────────────────────────────────────────────
 const sendToUser = async (userId, title, body, data = {}) => {
-    if (!userId) return;
+    const tag = `[sendToUser][UID:${userId}]`;
+
+    if (!userId) {
+        console.warn(`${tag} ⚠️  userId kosong, skip.`);
+        return;
+    }
+
+    console.log(`${tag} 🔍 Mengambil device aktif dari user_devices...`);
 
     try {
         const [devices] = await db.query(
-            'SELECT fcm_token FROM user_devices WHERE user_id = ? AND is_active = 1',
+            `SELECT id, fcm_token FROM user_devices 
+             WHERE user_id = ? AND is_active = 1`,
             [userId]
         );
 
+        console.log(`${tag} 📱 Ditemukan ${devices.length} device aktif`);
+
         if (devices.length === 0) {
-            console.log(`⚠️ [sendToUser] Tidak ada device aktif untuk UID: ${userId}`);
+            console.log(`${tag} ⚠️  Tidak ada device aktif, notif tidak terkirim.`);
             return;
         }
 
-        console.log(`📤 [sendToUser] Kirim ke ${devices.length} device aktif UID: ${userId}`);
-
         const results = await Promise.allSettled(
-            devices.map(d => sendToToken(d.fcm_token, title, body, data))
+            devices.map((d) => sendToToken(d.fcm_token, title, body, data))
         );
 
+        let sukses = 0, gagal = 0;
         results.forEach((result, i) => {
-            if (result.status === 'rejected') {
-                console.error(`⚠️ Gagal device ${i + 1} UID ${userId}:`, result.reason?.message);
+            if (result.status === 'fulfilled') {
+                sukses++;
+                console.log(`${tag} ✅ Device #${i + 1} (row_id:${devices[i].id}) — OK`);
+            } else {
+                gagal++;
+                console.error(`${tag} ❌ Device #${i + 1} (row_id:${devices[i].id}) — GAGAL: ${result.reason?.message}`);
             }
         });
 
+        console.log(`${tag} 📊 Ringkasan: ${sukses} sukses, ${gagal} gagal dari ${devices.length} device`);
+
     } catch (error) {
-        console.error(`❌ [sendToUser] Error UID ${userId}:`, error.message);
+        console.error(`${tag} ❌ Error query DB:`, error.message);
     }
 };
 
-/**
- * Kirim notifikasi ke semua device aktif berdasarkan role
- * Contoh: sendToRole('admin', ...) → semua admin yang punya device aktif
- */
+// ─────────────────────────────────────────────
+// Kirim ke SEMUA USER dengan role tertentu
+// HANYA dari user_devices — bukan users.fcm_token
+// ─────────────────────────────────────────────
 const sendToRole = async (role, title, body, data = {}) => {
-    if (!role) return;
+    const tag = `[sendToRole][role:${role}]`;
+
+    if (!role) {
+        console.warn(`${tag} ⚠️  role kosong, skip.`);
+        return;
+    }
+
+    console.log(`${tag} 🔍 Mengambil semua device aktif untuk role "${role}"...`);
 
     try {
         const [devices] = await db.query(
-            `SELECT ud.fcm_token FROM user_devices ud
+            `SELECT ud.id, ud.fcm_token, ud.user_id
+             FROM user_devices ud
              INNER JOIN users u ON u.id = ud.user_id
              WHERE u.role = ? AND ud.is_active = 1`,
             [role]
         );
 
+        console.log(`${tag} 📱 Ditemukan ${devices.length} device aktif`);
+
         if (devices.length === 0) {
-            console.log(`⚠️ [sendToRole] Tidak ada device aktif untuk role: ${role}`);
+            console.log(`${tag} ⚠️  Tidak ada device aktif untuk role "${role}".`);
             return;
         }
 
-        console.log(`📤 [sendToRole] Kirim ke ${devices.length} device aktif role: ${role}`);
+        const uniqueUsers = [...new Set(devices.map((d) => d.user_id))];
+        console.log(`${tag} 👥 Target user IDs: [${uniqueUsers.join(', ')}]`);
 
         const results = await Promise.allSettled(
-            devices.map(d => sendToToken(d.fcm_token, title, body, data))
+            devices.map((d) => sendToToken(d.fcm_token, title, body, data))
         );
 
+        let sukses = 0, gagal = 0;
         results.forEach((result, i) => {
-            if (result.status === 'rejected') {
-                console.error(`⚠️ Gagal device ${i + 1} role ${role}:`, result.reason?.message);
+            if (result.status === 'fulfilled') {
+                sukses++;
+                console.log(`${tag} ✅ Device #${i + 1} UID:${devices[i].user_id} — OK`);
+            } else {
+                gagal++;
+                console.error(`${tag} ❌ Device #${i + 1} UID:${devices[i].user_id} — GAGAL: ${result.reason?.message}`);
             }
         });
 
+        console.log(`${tag} 📊 Ringkasan: ${sukses} sukses, ${gagal} gagal dari ${devices.length} device`);
+
     } catch (error) {
-        console.error(`❌ [sendToRole] Error role ${role}:`, error.message);
+        console.error(`${tag} ❌ Error query DB:`, error.message);
     }
 };
 
-// Alias untuk kompatibilitas mundur — kode lama yang pakai sendPushNotification(token) tetap jalan
-exports.sendPushNotification = sendToToken;
+exports.sendPushNotification = sendToToken;  // backward compat
 exports.sendToToken = sendToToken;
 exports.sendToUser = sendToUser;
 exports.sendToRole = sendToRole;

@@ -1,7 +1,11 @@
+// /app/controllers/orderController.js
+// ============================================================
+// Order Controller — Final Version
+// Fix: double notif admin, logging detail, Expo FCM ready
+// ============================================================
+
 const fs = require('fs');
 const db = require('../config/db');
-
-// ✅ Tambah import sendToUser & sendToRole
 const { sendToUser, sendToRole } = require('../services/notificationService');
 
 const parseCommission = (raw) => {
@@ -10,29 +14,44 @@ const parseCommission = (raw) => {
     return parseFloat(parsed.toFixed(2));
 };
 
-// ✅ notifyAdmins sekarang pakai sendToRole — tidak query users 
+// ─────────────────────────────────────────────
+// HELPER: Notifikasi ke semua admin
+// Selalu await supaya error terlog dengan jelas
+// ─────────────────────────────────────────────
 const notifyAdmins = async (title, body, orderId = null) => {
+    const tag = `[notifyAdmins][Order#${orderId || '-'}]`;
+    console.log(`${tag} 📣 Mengirim notif ke role admin...`);
+    console.log(`${tag}    Title : ${title}`);
+    console.log(`${tag}    Body  : ${body}`);
     try {
         const dataPayload = {
-            type: "ADMIN_ORDER_ALERT",
+            type: 'ADMIN_ORDER_ALERT',
+            screen: 'OrderDetail',            // hint navigasi di sisi app
             ...(orderId && { orderId: String(orderId) }),
         };
         await sendToRole('admin', title, body, dataPayload);
+        console.log(`${tag} ✅ Notif admin selesai`);
     } catch (error) {
-        console.error(`[DEBUG] [ADMIN-NOTIF] Error:`, error.message);
+        console.error(`${tag} ❌ Gagal kirim notif admin:`, error.message);
     }
 };
 
+// ─────────────────────────────────────────────
+// releaseFundsToMitra
+// ⚠️  TIDAK memanggil notifyAdmins di sini
+//     supaya tidak double dengan caller-nya
+// ─────────────────────────────────────────────
 const releaseFundsToMitra = async (connection, orderId) => {
-    console.log(`[DEBUG] === Memulai Proses Pencairan Dana Order #${orderId} ===`);
+    const tag = `[releaseFunds][Order#${orderId}]`;
+    console.log(`${tag} === Memulai Pencairan Dana ===`);
 
+    // Cegah double pencairan
     const [existingTx] = await connection.execute(
-        "SELECT id FROM wallet_transactions WHERE description LIKE ?",
+        'SELECT id FROM wallet_transactions WHERE description LIKE ?',
         [`%Order #${orderId}%`]
     );
-
     if (existingTx.length > 0) {
-        console.warn(`[DEBUG] [PREVENT] Order #${orderId} sudah pernah dicairkan sebelumnya.`);
+        console.warn(`${tag} ⚠️  Sudah pernah dicairkan (${existingTx.length} tx). Skip.`);
         return false;
     }
 
@@ -52,7 +71,7 @@ const releaseFundsToMitra = async (connection, orderId) => {
     );
 
     if (order.length === 0) {
-        console.error(`[DEBUG] [ERROR] Order #${orderId} tidak ditemukan.`);
+        console.error(`${tag} ❌ Order tidak ditemukan di DB.`);
         return false;
     }
 
@@ -63,44 +82,46 @@ const releaseFundsToMitra = async (connection, orderId) => {
     const commissionPct = parseCommission(commission_rate);
     const grossOriginal = paidByCustomer + discountVal;
     const netAmount = Math.floor(grossOriginal * (commissionPct / 100));
-    const appProfitBersih = paidByCustomer - netAmount;
-    const appProfitKotor = grossOriginal - netAmount;
     const appPct = parseFloat((100 - commissionPct).toFixed(2));
+    const appProfitKotor = grossOriginal - netAmount;
+    const appProfitBersih = paidByCustomer - netAmount;
 
-    console.log(`[DEBUG] Rincian Dana Order #${orderId}:
-    - Toko                  : ${store_name}
-    - Nilai Jasa Asli       : Rp${grossOriginal.toLocaleString('id-ID')} (dasar bagi hasil)
-    - Voucher (beban app)   : Rp${discountVal.toLocaleString('id-ID')}
-    - Customer Bayar        : Rp${paidByCustomer.toLocaleString('id-ID')}
-    --------------------------------------------------
-    - Komisi Mitra          : ${commissionPct}%
-    - Net to Mitra          : Rp${netAmount.toLocaleString('id-ID')}
-    - Profit App ${appPct}% (kotor)  : Rp${appProfitKotor.toLocaleString('id-ID')}
-    - Voucher ditanggung app: Rp${discountVal.toLocaleString('id-ID')}
-    - Profit App (bersih)   : Rp${appProfitBersih.toLocaleString('id-ID')}
-    --------------------------------------------------`);
+    console.log(`${tag} 📊 Rincian Dana:`);
+    console.log(`${tag}    Toko                 : ${store_name} (UID Mitra: ${mitra_user_id})`);
+    console.log(`${tag}    Nilai Jasa Asli       : Rp${grossOriginal.toLocaleString('id-ID')}`);
+    console.log(`${tag}    Voucher (beban app)   : Rp${discountVal.toLocaleString('id-ID')}`);
+    console.log(`${tag}    Customer Bayar        : Rp${paidByCustomer.toLocaleString('id-ID')}`);
+    console.log(`${tag}    Komisi Mitra          : ${commissionPct}%`);
+    console.log(`${tag}    Net to Mitra          : Rp${netAmount.toLocaleString('id-ID')}`);
+    console.log(`${tag}    Profit App ${appPct}% (kotor) : Rp${appProfitKotor.toLocaleString('id-ID')}`);
+    console.log(`${tag}    Profit App (bersih)   : Rp${appProfitBersih.toLocaleString('id-ID')}`);
 
+    // Wallet
     const [walletCheck] = await connection.execute(
-        "SELECT id FROM wallets WHERE user_id = ?", [mitra_user_id]
+        'SELECT id, balance FROM wallets WHERE user_id = ?',
+        [mitra_user_id]
     );
 
     let walletId;
     if (walletCheck.length === 0) {
-        console.log(`[DEBUG] Pembuatan wallet baru untuk Mitra UID: ${mitra_user_id}`);
-        const [insertWallet] = await connection.execute(
-            "INSERT INTO wallets (user_id, balance) VALUES (?, ?)",
+        console.log(`${tag} 🆕 Wallet belum ada, membuat wallet baru untuk UID: ${mitra_user_id}`);
+        const [ins] = await connection.execute(
+            'INSERT INTO wallets (user_id, balance) VALUES (?, ?)',
             [mitra_user_id, netAmount]
         );
-        walletId = insertWallet.insertId;
+        walletId = ins.insertId;
+        console.log(`${tag} ✅ Wallet baru ID: ${walletId}, saldo awal: Rp${netAmount.toLocaleString('id-ID')}`);
     } else {
-        console.log(`[DEBUG] Update saldo wallet ID: ${walletCheck[0].id}`);
+        walletId = walletCheck[0].id;
+        const saldoLama = parseFloat(walletCheck[0].balance);
         await connection.execute(
-            "UPDATE wallets SET balance = balance + ? WHERE user_id = ?",
+            'UPDATE wallets SET balance = balance + ? WHERE user_id = ?',
             [netAmount, mitra_user_id]
         );
-        walletId = walletCheck[0].id;
+        console.log(`${tag} 💳 Wallet ID: ${walletId} | Saldo: Rp${saldoLama.toLocaleString('id-ID')} → Rp${(saldoLama + netAmount).toLocaleString('id-ID')}`);
     }
 
+    // Catat transaksi
     await connection.execute(
         "INSERT INTO wallet_transactions (wallet_id, amount, type, description) VALUES (?, ?, 'credit', ?)",
         [
@@ -109,19 +130,18 @@ const releaseFundsToMitra = async (connection, orderId) => {
             `Penghasilan Order #${orderId} (${commissionPct}% dari nilai jasa Rp${grossOriginal.toLocaleString('id-ID')})`
         ]
     );
+    console.log(`${tag} 📝 Transaksi wallet tercatat.`);
 
-    notifyAdmins(
-        "Pencairan Dana 💸",
-        `Dana Order #${orderId} sebesar Rp${netAmount.toLocaleString('id-ID')} (${commissionPct}%) telah masuk ke dompet ${store_name}.`,
-        orderId
-    );
+    // ✅ TIDAK panggil notifyAdmins di sini
+    //    Supaya caller (customerCompleteOrder) yang gabungkan notif
+    //    dan menghindari double notifikasi ke admin
 
-    console.log(`[DEBUG] === Pencairan Dana Selesai Order #${orderId}. Mitra menerima: Rp${netAmount.toLocaleString('id-ID')} ===`);
-    return { netAmount, mitra_user_id }; // ✅ return mitra_user_id juga untuk keperluan notif
+    console.log(`${tag} === Pencairan Selesai. Mitra: Rp${netAmount.toLocaleString('id-ID')} ===`);
+    return { netAmount, mitra_user_id, store_name };
 };
 
 // ============================================================
-// createOrder — tidak ada perubahan logika, hanya notifyAdmins sudah pakai sendToRole
+// createOrder
 // ============================================================
 exports.createOrder = async (req, res) => {
     const {
@@ -129,7 +149,12 @@ exports.createOrder = async (req, res) => {
         jadwal, lokasi, rincian_biaya, layananTerpilih, catatan, voucher_code
     } = req.body;
 
-    console.log(`[DEBUG] === Incoming Request: Create Order ===`);
+    const tag = '[createOrder]';
+    console.log(`${tag} === Incoming Request ===`);
+    console.log(`${tag}    Customer ID : ${customer_id}`);
+    console.log(`${tag}    Store ID    : ${store_id}`);
+    console.log(`${tag}    Metode Bayar: ${metode_pembayaran}`);
+
     const connection = await db.getConnection();
 
     try {
@@ -139,15 +164,16 @@ exports.createOrder = async (req, res) => {
         let appliedVoucherId = null;
 
         if (voucher_code) {
+            console.log(`${tag} 🎟️  Validasi voucher: ${voucher_code}`);
             const [vouchers] = await connection.execute(
-                "SELECT * FROM vouchers WHERE code = ? AND is_active = 1 AND (expired_at > NOW() OR expired_at IS NULL)",
+                'SELECT * FROM vouchers WHERE code = ? AND is_active = 1 AND (expired_at > NOW() OR expired_at IS NULL)',
                 [voucher_code]
             );
 
             if (vouchers.length > 0) {
                 const v = vouchers[0];
                 const [usageResult] = await connection.execute(
-                    "SELECT COUNT(*) as total_usage FROM voucher_usages WHERE voucher_id = ? AND user_id = ?",
+                    'SELECT COUNT(*) as total_usage FROM voucher_usages WHERE voucher_id = ? AND user_id = ?',
                     [v.id, customer_id]
                 );
                 const currentUsage = usageResult[0].total_usage;
@@ -159,38 +185,49 @@ exports.createOrder = async (req, res) => {
                     if (v.max_discount_amount && discountAmount > v.max_discount_amount) {
                         discountAmount = parseFloat(v.max_discount_amount);
                     }
+                    console.log(`${tag} ✅ Voucher valid — diskon: Rp${discountAmount.toLocaleString('id-ID')}`);
+                } else {
+                    console.log(`${tag} ⚠️  Voucher sudah dipakai (${currentUsage}/${limit}), diabaikan.`);
                 }
+            } else {
+                console.log(`${tag} ⚠️  Voucher tidak ditemukan / tidak aktif.`);
             }
         }
 
         const finalTotalPrice = rincian_biaya.total_akhir - discountAmount;
+        console.log(`${tag} 💰 Total bayar: Rp${finalTotalPrice.toLocaleString('id-ID')} (diskon: Rp${discountAmount.toLocaleString('id-ID')})`);
 
-        const sqlOrder = `INSERT INTO orders 
-            (customer_id, store_id, scheduled_date, scheduled_time, building_type, 
-             address_customer, lat_customer, lng_customer, total_price, 
-             platform_fee, service_fee, status, customer_notes, items, voucher_id, discount_amount) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?, ?, ?)`;
-
-        const [orderResult] = await connection.execute(sqlOrder, [
-            customer_id, store_id, jadwal.tanggal, jadwal.waktu, jenisGedung,
-            lokasi.alamatLengkap, lokasi.latitude, lokasi.longitude, finalTotalPrice,
-            rincian_biaya.biaya_layanan_app, rincian_biaya.biaya_transaksi,
-            catatan || null, JSON.stringify(layananTerpilih), appliedVoucherId, discountAmount
-        ]);
+        const [orderResult] = await connection.execute(
+            `INSERT INTO orders 
+             (customer_id, store_id, scheduled_date, scheduled_time, building_type, 
+              address_customer, lat_customer, lng_customer, total_price, 
+              platform_fee, service_fee, status, customer_notes, items, voucher_id, discount_amount) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?, ?, ?)`,
+            [
+                customer_id, store_id, jadwal.tanggal, jadwal.waktu, jenisGedung,
+                lokasi.alamatLengkap, lokasi.latitude, lokasi.longitude, finalTotalPrice,
+                rincian_biaya.biaya_layanan_app, rincian_biaya.biaya_transaksi,
+                catatan || null, JSON.stringify(layananTerpilih), appliedVoucherId, discountAmount
+            ]
+        );
 
         const newOrderId = orderResult.insertId;
+        console.log(`${tag} 📋 Order dibuat — ID: ${newOrderId}`);
 
         if (appliedVoucherId) {
             await connection.execute(
-                "INSERT INTO voucher_usages (voucher_id, user_id, order_id) VALUES (?, ?, ?)",
+                'INSERT INTO voucher_usages (voucher_id, user_id, order_id) VALUES (?, ?, ?)',
                 [appliedVoucherId, customer_id, newOrderId]
             );
         }
 
-        const sqlItem = `INSERT INTO order_items (order_id, service_name, qty, price_satuan, subtotal) VALUES (?, ?, ?, ?, ?)`;
         for (const item of layananTerpilih) {
-            await connection.execute(sqlItem, [newOrderId, item.nama, item.qty, item.hargaSatuan, (item.qty * item.hargaSatuan)]);
+            await connection.execute(
+                'INSERT INTO order_items (order_id, service_name, qty, price_satuan, subtotal) VALUES (?, ?, ?, ?, ?)',
+                [newOrderId, item.nama, item.qty, item.hargaSatuan, item.qty * item.hargaSatuan]
+            );
         }
+        console.log(`${tag} 📦 ${layananTerpilih.length} item order tersimpan`);
 
         await connection.execute(
             "INSERT INTO payments (order_id, customer_id, payment_method, gross_amount, payment_status) VALUES (?, ?, ?, ?, 'pending')",
@@ -203,12 +240,18 @@ exports.createOrder = async (req, res) => {
         );
 
         await connection.commit();
+        console.log(`${tag} ✅ Transaksi DB commit berhasil`);
 
-        notifyAdmins("Pesanan Baru 🛒", `Order #${newOrderId} telah dibuat. Status: UNPAID. Total: Rp${finalTotalPrice.toLocaleString()}`, newOrderId);
+        // ✅ Notif admin — await agar error terlog, tidak block response
+        notifyAdmins(
+            '🛒 Pesanan Baru Masuk!',
+            `Order #${newOrderId} dibuat oleh pelanggan. Status: UNPAID. Total: Rp${finalTotalPrice.toLocaleString('id-ID')}`,
+            newOrderId
+        ).catch((e) => console.error(`${tag} ❌ notifyAdmins error:`, e.message));
 
         res.status(201).json({
             success: true,
-            message: "Pesanan berhasil dibuat",
+            message: 'Pesanan berhasil dibuat',
             order_id: newOrderId,
             rincian_pembayaran: {
                 subtotal_awal: rincian_biaya.total_akhir,
@@ -220,15 +263,15 @@ exports.createOrder = async (req, res) => {
 
     } catch (error) {
         if (connection) await connection.rollback();
-        console.error("❌ [DEBUG] createOrder Error:", error.stack);
-        res.status(500).json({ success: false, message: "Gagal membuat pesanan", error: error.message });
+        console.error(`${tag} ❌ Error:`, error.stack);
+        res.status(500).json({ success: false, message: 'Gagal membuat pesanan', error: error.message });
     } finally {
         if (connection) connection.release();
     }
 };
 
 // ============================================================
-// getOrderDetail — tidak ada perubahan
+// getOrderDetail
 // ============================================================
 exports.getOrderDetail = async (req, res) => {
     const { id } = req.params;
@@ -236,61 +279,58 @@ exports.getOrderDetail = async (req, res) => {
         const sql = `
             SELECT 
                 o.*, 
-                u.full_name AS customer_name, 
-                u.phone_number AS customer_phone, 
-                u.fcm_token AS customer_fcm,
+                u.full_name        AS customer_name, 
+                u.phone_number     AS customer_phone, 
+                u.fcm_token        AS customer_fcm,
                 o.address_customer AS address_customer, 
-                m.full_name AS mitra_name, 
-                m.phone_number AS mitra_phone,
+                m.full_name        AS mitra_name, 
+                m.phone_number     AS mitra_phone,
                 s.store_name,
                 IFNULL(s.commission_rate, 70) AS commission_rate,
-                (o.total_price + o.discount_amount) as original_subtotal,
+                (o.total_price + o.discount_amount) AS original_subtotal,
                 FLOOR((o.total_price + o.discount_amount) * (IFNULL(s.commission_rate, 70) / 100)) AS projected_mitra_earning,
-                (SELECT rating FROM reviews WHERE order_id = o.id LIMIT 1) as already_rated,
+                (SELECT rating FROM reviews WHERE order_id = o.id LIMIT 1) AS already_rated,
                 (SELECT JSON_ARRAYAGG(
                     JSON_OBJECT('nama', service_name, 'qty', qty, 'hargaSatuan', price_satuan)
                  ) FROM order_items WHERE order_id = o.id) AS items
             FROM orders o 
-            LEFT JOIN users u ON o.customer_id = u.id 
-            LEFT JOIN stores s ON o.store_id = s.id 
-            LEFT JOIN users m ON s.user_id = m.id 
+            LEFT JOIN users u  ON o.customer_id = u.id 
+            LEFT JOIN stores s ON o.store_id    = s.id 
+            LEFT JOIN users m  ON s.user_id     = m.id 
             WHERE o.id = ?`;
 
         const [rows] = await db.execute(sql, [id]);
-
-        if (rows.length === 0) {
+        if (rows.length === 0)
             return res.status(404).json({ success: false, message: 'Pesanan tidak ditemukan' });
-        }
 
-        let data = rows[0];
+        const data = rows[0];
         data.commission_rate = parseCommission(data.commission_rate);
-
         if (data.proof_image_url && !data.proof_image_url.startsWith('http')) {
             data.proof_image_url = `${req.protocol}://${req.get('host')}/${data.proof_image_url.replace(/\\/g, '/')}`;
         }
-
-        res.status(200).json({ success: true, data: data });
+        res.status(200).json({ success: true, data });
     } catch (error) {
-        res.status(500).json({ success: false, message: "Internal Server Error", error: error.message });
+        res.status(500).json({ success: false, message: 'Internal Server Error', error: error.message });
     }
 };
 
 // ============================================================
-// getUserOrders — tidak ada perubahan
+// getUserOrders
 // ============================================================
 exports.getUserOrders = async (req, res) => {
     try {
         const { userId } = req.params;
-        const sql = `
-            SELECT 
+        const [rows] = await db.execute(
+            `SELECT 
                 o.id, o.status, o.total_price, o.discount_amount, 
                 o.scheduled_date, o.scheduled_time, o.order_date, o.cancelled_by, 
-                s.store_name as mitra_name 
-            FROM orders o
-            JOIN stores s ON o.store_id = s.id
-            WHERE o.customer_id = ?
-            ORDER BY o.order_date DESC`;
-        const [rows] = await db.execute(sql, [userId]);
+                s.store_name AS mitra_name 
+             FROM orders o
+             JOIN stores s ON o.store_id = s.id
+             WHERE o.customer_id = ?
+             ORDER BY o.order_date DESC`,
+            [userId]
+        );
         res.status(200).json({ success: true, data: rows });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -298,22 +338,27 @@ exports.getUserOrders = async (req, res) => {
 };
 
 // ============================================================
-// cancelOrder — tidak ada perubahan
+// cancelOrder
 // ============================================================
 exports.cancelOrder = async (req, res) => {
     const { orderId, reason } = req.body;
+    const tag = `[cancelOrder][Order#${orderId}]`;
     try {
-        const sql = `
-            UPDATE orders 
-            SET status = 'cancelled', 
-                cancelled_by = 'customer',
-                cancel_reason = ? 
-            WHERE id = ? AND status IN ('pending', 'unpaid')
-        `;
-        const [result] = await db.execute(sql, [reason, orderId]);
+        const [result] = await db.execute(
+            `UPDATE orders 
+             SET status = 'cancelled', cancelled_by = 'customer', cancel_reason = ? 
+             WHERE id = ? AND status IN ('pending', 'unpaid')`,
+            [reason, orderId]
+        );
 
         if (result.affectedRows > 0) {
-            notifyAdmins("Pesanan Dibatalkan ⚠️", `Order #${orderId} dibatalkan Pelanggan. Alasan: ${reason || '-'}`, orderId);
+            console.log(`${tag} ✅ Order berhasil dibatalkan oleh customer`);
+            notifyAdmins(
+                '⚠️ Pesanan Dibatalkan',
+                `Order #${orderId} dibatalkan pelanggan. Alasan: ${reason || '-'}`,
+                orderId
+            ).catch((e) => console.error(`${tag} ❌ notifyAdmins error:`, e.message));
+
             res.json({ success: true, message: 'Pesanan berhasil dibatalkan' });
         } else {
             res.status(400).json({ success: false, message: 'Pesanan tidak dapat dibatalkan' });
@@ -324,33 +369,31 @@ exports.cancelOrder = async (req, res) => {
 };
 
 // ============================================================
-// getAllOrdersAdmin — tidak ada perubahan
+// getAllOrdersAdmin
 // ============================================================
 exports.getAllOrdersAdmin = async (req, res) => {
     try {
-        const sql = `
-            SELECT 
+        const [rows] = await db.execute(
+            `SELECT 
                 o.id, o.status, o.customer_notes, o.total_price, 
                 o.platform_fee, o.service_fee, o.scheduled_date, o.scheduled_time, 
                 o.order_date, o.cancelled_by, o.cancel_reason, 
-                s.store_name as mitra_name, 
+                s.store_name AS mitra_name, 
                 IFNULL(s.commission_rate, 70) AS commission_rate,
                 FLOOR((o.total_price + IFNULL(o.discount_amount, 0)) * (IFNULL(s.commission_rate, 70) / 100)) AS mitra_earning,
                 ((o.total_price + IFNULL(o.discount_amount, 0)) - FLOOR((o.total_price + IFNULL(o.discount_amount, 0)) * (IFNULL(s.commission_rate, 70) / 100))) AS app_profit,
-                u.full_name as customer_name, 
+                u.full_name AS customer_name, 
                 p.payment_method, p.payment_type, p.payment_status
-            FROM orders o
-            JOIN stores s ON o.store_id = s.id
-            JOIN users u ON o.customer_id = u.id
-            LEFT JOIN payments p ON o.id = p.order_id
-            ORDER BY o.order_date DESC`;
-        const [rows] = await db.execute(sql);
-
-        const normalized = rows.map(r => ({
+             FROM orders o
+             JOIN stores s  ON o.store_id    = s.id
+             JOIN users u   ON o.customer_id = u.id
+             LEFT JOIN payments p ON o.id    = p.order_id
+             ORDER BY o.order_date DESC`
+        );
+        const normalized = rows.map((r) => ({
             ...r,
             commission_rate: parseCommission(r.commission_rate)
         }));
-
         res.status(200).json({ success: true, data: normalized });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -358,21 +401,21 @@ exports.getAllOrdersAdmin = async (req, res) => {
 };
 
 // ============================================================
-// getRefundHistory — tidak ada perubahan
+// getRefundHistory
 // ============================================================
 exports.getRefundHistory = async (req, res) => {
     try {
-        const sql = `
-            SELECT 
-                p.order_id, u.full_name as customer_name, p.gross_amount as nominal_refund, 
-                p.transaction_time as tanggal_refund, o.status as order_status, 
+        const [rows] = await db.execute(
+            `SELECT 
+                p.order_id, u.full_name AS customer_name, p.gross_amount AS nominal_refund, 
+                p.transaction_time AS tanggal_refund, o.status AS order_status, 
                 o.platform_fee, o.service_fee, o.cancelled_by, o.cancel_reason
-            FROM payments p
-            JOIN orders o ON p.order_id = o.id
-            JOIN users u ON o.customer_id = u.id
-            WHERE p.payment_status = 'refund'
-            ORDER BY p.transaction_time DESC`;
-        const [rows] = await db.execute(sql);
+             FROM payments p
+             JOIN orders o ON p.order_id   = o.id
+             JOIN users u  ON o.customer_id = u.id
+             WHERE p.payment_status = 'refund'
+             ORDER BY p.transaction_time DESC`
+        );
         res.status(200).json({ success: true, data: rows });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
@@ -380,43 +423,49 @@ exports.getRefundHistory = async (req, res) => {
 };
 
 // ============================================================
-// updateOrderStatus — ✅ notif customer pakai sendToUser
+// updateOrderStatus (oleh Mitra)
 // ============================================================
 exports.updateOrderStatus = async (req, res) => {
     const { id } = req.params;
     const { status, notes } = req.body;
+    const tag = `[updateOrderStatus][Order#${id}]`;
     const connection = await db.getConnection();
+
+    console.log(`${tag} === Request status → "${status}" ===`);
 
     try {
         await connection.beginTransaction();
 
-        // ✅ Tidak perlu ambil fcm_token dari users, cukup ambil customer_id & nama
         const [orderData] = await connection.execute(
             `SELECT o.status, o.proof_image_url, o.customer_id, u.full_name 
              FROM orders o 
              JOIN users u ON o.customer_id = u.id 
-             WHERE o.id = ? FOR UPDATE`, [id]
+             WHERE o.id = ? FOR UPDATE`,
+            [id]
         );
 
         if (orderData.length === 0) {
             if (req.file) fs.unlinkSync(req.file.path);
             await connection.rollback();
-            return res.status(404).json({ success: false, message: "Order tidak ditemukan" });
+            return res.status(404).json({ success: false, message: 'Order tidak ditemukan' });
         }
 
         const currentStatus = orderData[0].status;
-        const customerId = orderData[0].customer_id;   // ✅ pakai ID, bukan token
+        const customerId = orderData[0].customer_id;
         const customerName = orderData[0].full_name;
+
+        console.log(`${tag} Status saat ini: "${currentStatus}" → akan diubah ke "${status}"`);
 
         if (['completed', 'cancelled'].includes(currentStatus)) {
             if (req.file) fs.unlinkSync(req.file.path);
             await connection.rollback();
-            return res.status(400).json({ success: false, message: "Pesanan sudah bersifat final." });
+            return res.status(400).json({ success: false, message: 'Pesanan sudah bersifat final.' });
         }
 
         let proofImageUrl = orderData[0].proof_image_url;
         if (req.file) {
             proofImageUrl = req.file.path.replace(/\\/g, '/');
+            console.log(`${tag} 📷 Bukti foto diterima: ${proofImageUrl}`);
         }
 
         let statusToSave = status;
@@ -426,31 +475,40 @@ exports.updateOrderStatus = async (req, res) => {
         if (status === 'completed') {
             if (!req.file && !proofImageUrl) {
                 await connection.rollback();
-                return res.status(400).json({ success: false, message: "Bukti foto wajib diunggah." });
+                return res.status(400).json({ success: false, message: 'Bukti foto wajib diunggah.' });
             }
             statusToSave = 'working';
-            responseMessage = "Laporan pengerjaan terkirim. Menunggu konfirmasi pelanggan.";
+            responseMessage = 'Laporan pengerjaan terkirim. Menunggu konfirmasi pelanggan.';
         } else if (status === 'cancelled') {
             cancelledBy = 'mitra';
-            responseMessage = "Pesanan berhasil dibatalkan.";
+            responseMessage = 'Pesanan berhasil dibatalkan.';
         }
 
         await connection.execute(
-            "UPDATE orders SET status = ?, proof_image_url = ?, cancelled_by = ? WHERE id = ?",
+            'UPDATE orders SET status = ?, proof_image_url = ?, cancelled_by = ? WHERE id = ?',
             [statusToSave, proofImageUrl, cancelledBy, id]
         );
 
-        let logNotes = status === 'completed' ? `Mitra melaporkan pekerjaan selesai` : `Status diperbarui ke ${status} oleh mitra`;
-        if (status === 'cancelled') logNotes = `Dibatalkan oleh mitra. Alasan: ${notes || 'Tidak ada alasan'}`;
+        const logNotes = status === 'cancelled'
+            ? `Dibatalkan oleh mitra. Alasan: ${notes || 'Tidak ada alasan'}`
+            : status === 'completed'
+                ? 'Mitra melaporkan pekerjaan selesai'
+                : `Status diperbarui ke ${statusToSave} oleh mitra`;
 
         await connection.execute(
-            "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, ?, ?)",
+            'INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, ?, ?)',
             [id, statusToSave, logNotes]
         );
 
         await connection.commit();
+        console.log(`${tag} ✅ DB commit — status tersimpan: "${statusToSave}"`);
 
-        notifyAdmins("Update Status Order 🛠️", `Order #${id} diupdate ke ${statusToSave} oleh Mitra.`, id);
+        // Notif admin
+        notifyAdmins(
+            '🛠️ Update Status Order',
+            `Order #${id} diubah ke "${statusToSave}" oleh mitra.`,
+            id
+        ).catch((e) => console.error(`${tag} ❌ notifyAdmins error:`, e.message));
 
         res.status(200).json({
             success: true,
@@ -458,99 +516,143 @@ exports.updateOrderStatus = async (req, res) => {
             data: { orderId: id, status: statusToSave, cancelled_by: cancelledBy }
         });
 
-        // ✅ Kirim notif ke customer via sendToUser (dari user_devices)
+        // Notif ke customer (after response)
         const statusMap = {
-            'accepted': 'telah diterima oleh teknisi',
-            'on_the_way': 'sedang menuju lokasi Anda',
-            'working': 'sedang dikerjakan',
-            'completed': 'telah selesai dikerjakan dan menunggu konfirmasi Anda ✅',
-            'cancelled': 'telah dibatalkan oleh mitra ❌'
+            accepted: 'telah diterima oleh teknisi',
+            on_the_way: 'sedang menuju lokasi Anda',
+            working: 'sedang dikerjakan',
+            completed: 'telah selesai dikerjakan dan menunggu konfirmasi Anda ✅',
+            cancelled: 'telah dibatalkan oleh mitra ❌'
         };
-        const title = status === 'cancelled' ? "Pesanan Dibatalkan ❌" : "Update Pesanan 🔔";
-        const body = `Halo ${customerName}, pesanan Anda ${statusMap[status] || status}`;
-        sendToUser(customerId, title, body, {
+        const notifTitle = status === 'cancelled' ? '❌ Pesanan Dibatalkan' : '🔔 Update Pesanan';
+        const notifBody = `Halo ${customerName}, pesanan Anda ${statusMap[status] || status}`;
+
+        console.log(`${tag} 📲 Mengirim notif ke customer UID: ${customerId}`);
+        sendToUser(customerId, notifTitle, notifBody, {
             orderId: String(id),
-            type: "ORDER_STATUS_UPDATE",
-            status: String(statusToSave)
-        }).catch(e => { });
+            type: 'ORDER_STATUS_UPDATE',
+            status: String(statusToSave),
+            screen: 'OrderDetail',           // hint navigasi Expo
+        }).catch((e) => console.error(`${tag} ❌ sendToUser error:`, e.message));
 
     } catch (error) {
         if (connection) await connection.rollback();
         if (req.file) fs.unlinkSync(req.file.path);
-        if (!res.headersSent) res.status(500).json({ success: false, message: "Server error.", error: error.message });
+        console.error(`${tag} ❌ Error:`, error.stack);
+        if (!res.headersSent)
+            res.status(500).json({ success: false, message: 'Server error.', error: error.message });
     } finally {
         connection.release();
     }
 };
 
 // ============================================================
-// customerCompleteOrder — ✅ notif mitra pakai sendToUser via mitra_user_id
+// customerCompleteOrder
+// ✅ Hanya SATU notifyAdmins di sini — tidak ada di releaseFunds
 // ============================================================
 exports.customerCompleteOrder = async (req, res) => {
     const { id } = req.params;
     const { rating, comment, quality, punctuality, communication } = req.body;
+    const tag = `[customerCompleteOrder][Order#${id}]`;
     const connection = await db.getConnection();
 
-    console.log(`\n[DEBUG] === Memulai Proses Konfirmasi Order #${id} ===`);
+    console.log(`${tag} === Memulai Konfirmasi Order ===`);
 
     try {
         await connection.beginTransaction();
 
-        const [orderData] = await connection.execute("SELECT customer_id, store_id, status FROM orders WHERE id = ?", [id]);
-        if (orderData.length === 0) throw new Error("Order tidak ditemukan");
+        const [orderData] = await connection.execute(
+            'SELECT customer_id, store_id, status FROM orders WHERE id = ?',
+            [id]
+        );
+        if (orderData.length === 0) throw new Error('Order tidak ditemukan');
 
         const { customer_id, store_id, status: currentStatus } = orderData[0];
+        console.log(`${tag} Status saat ini: "${currentStatus}"`);
 
+        // Simpan review
         await connection.execute(
-            `INSERT INTO reviews (order_id, customer_id, store_id, rating, rating_quality, rating_punctuality, rating_communication, comment) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE rating = VALUES(rating), comment = VALUES(comment)`,
-            [id, customer_id, store_id, parseInt(rating) || 5, parseInt(quality) || 5, parseInt(punctuality) || 5, parseInt(communication) || 5, comment || ""]
+            `INSERT INTO reviews 
+             (order_id, customer_id, store_id, rating, rating_quality, rating_punctuality, rating_communication, comment) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?) 
+             ON DUPLICATE KEY UPDATE rating = VALUES(rating), comment = VALUES(comment)`,
+            [id, customer_id, store_id,
+                parseInt(rating) || 5, parseInt(quality) || 5,
+                parseInt(punctuality) || 5, parseInt(communication) || 5,
+                comment || '']
         );
+        console.log(`${tag} ⭐ Review tersimpan — rating: ${rating}`);
 
         const [updateResult] = await connection.execute(
             "UPDATE orders SET status = 'completed' WHERE id = ? AND status != 'completed'",
             [id]
         );
 
+        // Update rating toko
         await connection.execute(
             `UPDATE stores SET 
                 average_rating = (SELECT COALESCE(AVG(rating), 0) FROM reviews WHERE store_id = ?), 
-                total_reviews = (SELECT COUNT(*) FROM reviews WHERE store_id = ?) 
+                total_reviews  = (SELECT COUNT(*) FROM reviews WHERE store_id = ?) 
              WHERE id = ?`,
             [store_id, store_id, store_id]
         );
 
+        let releaseResult = null;
+
         if (updateResult.affectedRows > 0) {
-            const result = await releaseFundsToMitra(connection, id);
+            console.log(`${tag} 🔄 Status order diubah ke "completed"`);
 
-            notifyAdmins("Order Selesai ✅", `Pelanggan telah mengkonfirmasi penyelesaian Order #${id}. Rating: ${rating}⭐`, id);
+            // Pencairan dana — TIDAK ada notifyAdmins di dalamnya
+            releaseResult = await releaseFundsToMitra(connection, id);
 
-            // ✅ Kirim notif ke mitra via sendToUser (dari user_devices, bukan fcm_token langsung)
-            if (result && result.netAmount) {
+            if (releaseResult) {
                 const formatted = new Intl.NumberFormat('id-ID', {
-                    style: 'currency',
-                    currency: 'IDR',
-                    maximumFractionDigits: 0
-                }).format(result.netAmount);
+                    style: 'currency', currency: 'IDR', maximumFractionDigits: 0
+                }).format(releaseResult.netAmount);
 
+                // ✅ SATU notif admin — gabungan info selesai + pencairan
+                notifyAdmins(
+                    '✅ Order Selesai & Dana Cair',
+                    `Order #${id} dikonfirmasi selesai. Rating: ${rating}⭐. Dana ${formatted} masuk ke dompet ${releaseResult.store_name}.`,
+                    id
+                ).catch((e) => console.error(`${tag} ❌ notifyAdmins error:`, e.message));
+
+                // Notif ke mitra
+                console.log(`${tag} 📲 Mengirim notif ke mitra UID: ${releaseResult.mitra_user_id}`);
                 sendToUser(
-                    result.mitra_user_id,
-                    "Dana Masuk! 💰",
-                    `Selamat! Pendapatan ${formatted} dari Order #${id} masuk ke dompet.`,
-                    { type: 'WALLET_UPDATE', orderId: String(id) }
-                ).catch(e => { });
+                    releaseResult.mitra_user_id,
+                    '💰 Dana Masuk!',
+                    `Selamat! Pendapatan ${formatted} dari Order #${id} masuk ke dompet Anda.`,
+                    { type: 'WALLET_UPDATE', orderId: String(id), screen: 'Wallet' }
+                ).catch((e) => console.error(`${tag} ❌ sendToUser mitra error:`, e.message));
+
+            } else {
+                // releaseFunds return false = sudah pernah dicairkan
+                // Tetap kirim notif admin tapi tanpa info pencairan
+                notifyAdmins(
+                    '✅ Order Selesai',
+                    `Order #${id} dikonfirmasi selesai oleh pelanggan. Rating: ${rating}⭐`,
+                    id
+                ).catch((e) => console.error(`${tag} ❌ notifyAdmins error:`, e.message));
             }
+        } else {
+            console.log(`${tag} ℹ️  Order sudah completed sebelumnya, hanya update review`);
         }
 
         await connection.commit();
+        console.log(`${tag} ✅ DB commit berhasil`);
+
         res.status(200).json({
             success: true,
-            message: updateResult.affectedRows > 0 ? "Pesanan selesai & dana dicairkan." : "Ulasan diperbarui."
+            message: updateResult.affectedRows > 0
+                ? 'Pesanan selesai & dana dicairkan.'
+                : 'Ulasan diperbarui.'
         });
 
     } catch (error) {
         if (connection) await connection.rollback();
-        res.status(500).json({ success: false, message: "Gagal memproses", error: error.message });
+        console.error(`${tag} ❌ Error:`, error.stack);
+        res.status(500).json({ success: false, message: 'Gagal memproses', error: error.message });
     } finally {
         if (connection) connection.release();
     }
