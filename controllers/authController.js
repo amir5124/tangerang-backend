@@ -39,37 +39,34 @@ const detectDeviceType = (userAgent = '') => {
 // - ON DUPLICATE KEY supaya tidak ada duplikat row
 // ─────────────────────────────────────────────
 const upsertDeviceToken = async (userId, fcmToken, userAgent = '') => {
-    if (
-        !fcmToken ||
-        fcmToken === 'NO_TOKEN' ||
-        fcmToken === 'null' ||
-        fcmToken.trim() === '' ||
-        fcmToken.startsWith('WEB_NO_TOKEN')
-    ) {
-        console.log(`📵 [upsertDeviceToken] UID: ${userId} — token tidak valid, dilewati.`);
-        return;
-    }
+    if (!fcmToken || fcmToken === 'NO_TOKEN' || fcmToken === 'null' ||
+        fcmToken.trim() === '' || fcmToken.startsWith('WEB_NO_TOKEN')) return;
 
     const deviceType = detectDeviceType(userAgent);
 
     try {
-        // 1. Update fcm_token di tabel users
         await db.query('UPDATE users SET fcm_token = ? WHERE id = ?', [fcmToken, userId]);
 
-        // 2. Nonaktifkan token LAMA milik user ini (selain token sekarang)
+        // ✅ TAMBAHAN — nonaktifkan token ini jika dipakai user lain (ganti akun)
+        await db.query(
+            'UPDATE user_devices SET is_active = 0 WHERE fcm_token = ? AND user_id != ?',
+            [fcmToken, userId]
+        );
+
+        // Nonaktifkan token lama milik user ini
         await db.query(
             'UPDATE user_devices SET is_active = 0 WHERE user_id = ? AND fcm_token != ?',
             [userId, fcmToken]
         );
 
-        // 3. Upsert token baru (tidak duplikat karena UNIQUE KEY di DB)
+        // Upsert token baru
         await db.query(`
             INSERT INTO user_devices (user_id, fcm_token, device_type, is_active, last_used_at)
             VALUES (?, ?, ?, 1, NOW())
             ON DUPLICATE KEY UPDATE
-                is_active     = 1,
-                device_type   = VALUES(device_type),
-                last_used_at  = NOW()
+                is_active    = 1,
+                device_type  = VALUES(device_type),
+                last_used_at = NOW()
         `, [userId, fcmToken, deviceType]);
 
         console.log(`📱 [upsertDeviceToken] UID: ${userId} | Type: ${deviceType} — OK`);
@@ -77,7 +74,6 @@ const upsertDeviceToken = async (userId, fcmToken, userAgent = '') => {
         console.error(`⚠️ [upsertDeviceToken Error] UID: ${userId}:`, err.message);
     }
 };
-
 // ─────────────────────────────────────────────
 // HELPER: Kirim notifikasi ke semua admin
 // Menggunakan sendToRole supaya tidak bergantung
