@@ -31,6 +31,10 @@ router.get('/orders-history/:store_id', mitraController.getAllHistory);
 router.get('/profile/:id', mitraController.getStoreProfile);
 router.put('/profile/:id', upload.single('image'), mitraController.updateStoreProfile);
 
+router.get('/products/all', mitraController.getAllProducts);      // ✅ TAMBAHKAN INI
+router.get('/products/:id', mitraController.getProductDetail);    // ✅ TAMBAHKAN INI
+
+
 // ==========================================
 // PROTECTED ENDPOINTS (Dengan Auth)
 // ==========================================

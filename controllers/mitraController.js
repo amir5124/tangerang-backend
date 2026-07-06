@@ -244,6 +244,95 @@ exports.updateMitra = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────────────────────
+// getAllProducts
+// ✅ NEW: mengembalikan daftar PRODUK/LAYANAN individual (bukan toko)
+//         dari tabel `services`, join `stores` untuk info toko/lokasi/rating
+// ─────────────────────────────────────────────────────────────
+exports.getAllProducts = async (req, res) => {
+    const { category } = req.query;
+
+    let query = `
+        SELECT 
+            sv.id,
+            sv.store_id,
+            sv.service_name AS name,
+            sv.price_type,
+            sv.base_price,
+            sv.description,
+            sv.image_url,
+            s.store_name,
+            s.category,
+            s.latitude,
+            s.longitude,
+            s.average_rating,
+            s.total_reviews,
+            s.is_verified,
+            s.operating_hours
+        FROM services sv
+        JOIN stores s ON sv.store_id = s.id
+        WHERE sv.is_active = 1 AND s.is_active = 1
+    `;
+
+    const params = [];
+    if (category) {
+        query += ` AND s.category = ?`;
+        params.push(category);
+    }
+    query += ` ORDER BY sv.id DESC`;
+
+    try {
+        const [results] = await db.query(query, params);
+        res.json(results);
+    } catch (err) {
+        console.error('[getAllProducts] ❌ Error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// ─────────────────────────────────────────────────────────────
+// getProductDetail (UPDATED — sekarang include review asli toko)
+// ─────────────────────────────────────────────────────────────
+exports.getProductDetail = async (req, res) => {
+    const { id } = req.params;
+    try {
+        const [rows] = await db.query(`
+            SELECT 
+                sv.id, sv.store_id, sv.service_name AS name,
+                sv.price_type, sv.base_price, sv.description, sv.image_url,
+                s.store_name, s.category, s.latitude, s.longitude,
+                s.average_rating, s.total_reviews, s.is_verified
+            FROM services sv
+            JOIN stores s ON sv.store_id = s.id
+            WHERE sv.id = ?
+        `, [id]);
+
+        if (rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Produk tidak ditemukan' });
+        }
+
+        const product = rows[0];
+
+        // ✅ Ambil review asli milik TOKO (bukan produk spesifik),
+        //    hanya yang is_displayed = 1, terbaru duluan, maksimal 10
+        const [reviews] = await db.query(`
+            SELECT 
+                r.id, r.rating, r.rating_quality, r.rating_punctuality,
+                r.rating_communication, r.comment, r.created_at,
+                u.full_name AS customer_name
+            FROM reviews r
+            JOIN users u ON r.customer_id = u.id
+            WHERE r.store_id = ? AND r.is_displayed = 1
+            ORDER BY r.created_at DESC
+            LIMIT 10
+        `, [product.store_id]);
+
+        res.json({ ...product, reviews });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// ─────────────────────────────────────────────────────────────
 // deleteMitra
 // ─────────────────────────────────────────────────────────────
 exports.deleteMitra = async (req, res) => {
