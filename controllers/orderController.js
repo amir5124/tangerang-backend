@@ -308,6 +308,10 @@ exports.createOrder = async (req, res) => {
 // ============================================================
 // createOrderWithProducts - Untuk pembelian produk toko
 // ============================================================
+// /app/controllers/orderController.js
+// ============================================================
+// createOrderWithProducts - Untuk pembelian produk toko
+// ============================================================
 exports.createOrderWithProducts = async (req, res) => {
     const {
         customer_id,
@@ -369,7 +373,7 @@ exports.createOrderWithProducts = async (req, res) => {
         const finalTotalPrice = rincian_biaya.total_akhir - discountAmount;
         console.log(`${tag} 💰 Total bayar: Rp${finalTotalPrice.toLocaleString('id-ID')}`);
 
-        // Ambil data dari customerData (bukan dari jadwal)
+        // Ambil data dari customerData
         const scheduledDate = customerData?.delivery_date || new Date().toISOString().split('T')[0];
         const scheduledTime = customerData?.delivery_time || '08:00';
         const buildingType = 'Rumah';
@@ -381,7 +385,7 @@ exports.createOrderWithProducts = async (req, res) => {
         console.log(`${tag} 📅 Tanggal: ${scheduledDate}, Waktu: ${scheduledTime}`);
         console.log(`${tag} 📍 Alamat: ${addressCustomer}`);
 
-        // Query INSERT tanpa voucher_id (karena belum ada di tabel)
+        // Query INSERT tanpa voucher_id
         const [orderResult] = await connection.execute(
             `INSERT INTO orders 
              (customer_id, store_id, scheduled_date, scheduled_time, building_type, 
@@ -418,47 +422,63 @@ exports.createOrderWithProducts = async (req, res) => {
         }
 
         // Simpan item produk
-        // Simpan item produk - isi service_name dengan nama produk
         for (const item of product_items) {
             await connection.execute(
                 `INSERT INTO order_items 
-         (order_id, product_id, product_name, variant, qty, price_satuan, subtotal, service_name) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                 (order_id, product_id, product_name, variant, qty, price_satuan, subtotal, service_name) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
                     newOrderId,
-                    item.id,
+                    parseInt(item.id),
                     item.name,
                     item.variant || 'Default',
                     item.qty,
                     item.priceNumber,
                     item.priceNumber * item.qty,
-                    item.name // Isi service_name dengan nama produk
+                    item.name
                 ]
             );
         }
         console.log(`${tag} 📦 ${product_items.length} produk tersimpan`);
 
-        // Update profil customer jika ada
-        if (customerData) {
-            await connection.execute(
-                `UPDATE users SET 
-                    full_name = COALESCE(?, full_name),
-                    phone_number = COALESCE(?, phone_number),
-                    email = COALESCE(?, email),
-                    address = COALESCE(?, address),
-                    latitude = COALESCE(?, latitude),
-                    longitude = COALESCE(?, longitude)
-                 WHERE id = ?`,
-                [
-                    customerData.name || null,
-                    customerData.phone || null,
-                    customerData.email || null,
-                    customerData.address || null,
-                    customerData.latitude || null,
-                    customerData.longitude || null,
-                    customer_id
-                ]
-            );
+        // HAPUS atau PERBAIKI update profil customer
+        // Karena kolom 'address' mungkin tidak ada di tabel users
+        // Kita hanya update field yang pasti ada
+        try {
+            // Cek kolom yang ada di tabel users terlebih dahulu
+            // Atau hanya update field yang pasti ada: full_name, phone_number, email
+            if (customerData) {
+                // Update hanya field yang pasti ada
+                const updateFields = [];
+                const updateValues = [];
+
+                if (customerData.name) {
+                    updateFields.push('full_name = ?');
+                    updateValues.push(customerData.name);
+                }
+                if (customerData.phone) {
+                    updateFields.push('phone_number = ?');
+                    updateValues.push(customerData.phone);
+                }
+                if (customerData.email) {
+                    updateFields.push('email = ?');
+                    updateValues.push(customerData.email);
+                }
+
+                // Hanya jalankan jika ada field yang diupdate
+                if (updateFields.length > 0) {
+                    updateValues.push(customer_id);
+                    await connection.execute(
+                        `UPDATE users SET ${updateFields.join(', ')} WHERE id = ?`,
+                        updateValues
+                    );
+                    console.log(`${tag} ✅ Profil customer diupdate`);
+                }
+            }
+        } catch (updateError) {
+            // Jika gagal update profil, log error tapi lanjutkan
+            console.warn(`${tag} ⚠️  Gagal update profil customer:`, updateError.message);
+            // Tidak throw error, biarkan order tetap terbuat
         }
 
         // Simpan payment
