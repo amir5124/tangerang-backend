@@ -2,6 +2,7 @@
 // ============================================================
 // Order Controller — Final Version
 // Fix: double notif admin, logging detail, Expo FCM ready
+// Support: Service & Product Orders
 // ============================================================
 
 const fs = require('fs');
@@ -141,7 +142,7 @@ const releaseFundsToMitra = async (connection, orderId) => {
 };
 
 // ============================================================
-// createOrder
+// createOrder - Untuk Service (AC, Sedot WC, ART, dll)
 // ============================================================
 exports.createOrder = async (req, res) => {
     const {
@@ -201,8 +202,8 @@ exports.createOrder = async (req, res) => {
             `INSERT INTO orders 
              (customer_id, store_id, scheduled_date, scheduled_time, building_type, 
               address_customer, lat_customer, lng_customer, total_price, 
-              platform_fee, service_fee, status, customer_notes, items, voucher_id, discount_amount) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?, ?, ?)`,
+              platform_fee, service_fee, status, customer_notes, items, voucher_id, discount_amount, order_type) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?, ?, ?, 'service')`,
             [
                 customer_id, store_id, jadwal.tanggal, jadwal.waktu, jenisGedung,
                 lokasi.alamatLengkap, lokasi.latitude, lokasi.longitude, finalTotalPrice,
@@ -212,7 +213,7 @@ exports.createOrder = async (req, res) => {
         );
 
         const newOrderId = orderResult.insertId;
-        console.log(`${tag} 📋 Order dibuat — ID: ${newOrderId}`);
+        console.log(`${tag} 📋 Order service dibuat — ID: ${newOrderId}`);
 
         if (appliedVoucherId) {
             await connection.execute(
@@ -235,7 +236,7 @@ exports.createOrder = async (req, res) => {
         );
 
         await connection.execute(
-            "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'unpaid', 'Pesanan dibuat')",
+            "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'unpaid', 'Pesanan service dibuat')",
             [newOrderId]
         );
 
@@ -244,15 +245,30 @@ exports.createOrder = async (req, res) => {
 
         // ✅ Notif admin — await agar error terlog, tidak block response
         notifyAdmins(
-            '🛒 Pesanan Baru Masuk!',
-            `Order #${newOrderId} dibuat oleh pelanggan. Status: UNPAID. Total: Rp${finalTotalPrice.toLocaleString('id-ID')}`,
+            '🛒 Pesanan Service Baru!',
+            `Order #${newOrderId} - Service dari toko. Total: Rp${finalTotalPrice.toLocaleString('id-ID')}`,
             newOrderId
         ).catch((e) => console.error(`${tag} ❌ notifyAdmins error:`, e.message));
 
+        // Notif ke mitra/toko
+        const [storeData] = await connection.execute(
+            'SELECT user_id FROM stores WHERE id = ?',
+            [store_id]
+        );
+        if (storeData.length > 0) {
+            sendToUser(
+                storeData[0].user_id,
+                '📦 Pesanan Service Masuk!',
+                `Ada pesanan service baru #${newOrderId} dari pelanggan. Segera proses!`,
+                { type: 'NEW_ORDER', orderId: String(newOrderId), screen: 'OrderDetail' }
+            ).catch((e) => console.error(`${tag} ❌ sendToUser error:`, e.message));
+        }
+
         res.status(201).json({
             success: true,
-            message: 'Pesanan berhasil dibuat',
+            message: 'Pesanan service berhasil dibuat',
             order_id: newOrderId,
+            order_type: 'service',
             rincian_pembayaran: {
                 subtotal_awal: rincian_biaya.total_akhir,
                 potongan_diskon: discountAmount,
@@ -264,14 +280,230 @@ exports.createOrder = async (req, res) => {
     } catch (error) {
         if (connection) await connection.rollback();
         console.error(`${tag} ❌ Error:`, error.stack);
-        res.status(500).json({ success: false, message: 'Gagal membuat pesanan', error: error.message });
+        res.status(500).json({ success: false, message: 'Gagal membuat pesanan service', error: error.message });
     } finally {
         if (connection) connection.release();
     }
 };
 
 // ============================================================
-// getOrderDetail
+// createOrderWithProducts - Untuk pembelian produk toko
+// ============================================================
+exports.createOrderWithProducts = async (req, res) => {
+    const {
+        customer_id,
+        store_id,
+        metode_pembayaran,
+        customer: customerData,
+        delivery_option,
+        protection,
+        voucher_code,
+        rincian_biaya,
+        product_items
+    } = req.body;
+
+    const tag = '[createOrderWithProducts]';
+    console.log(`${tag} === Incoming Product Order ===`);
+    console.log(`${tag}    Customer ID : ${customer_id}`);
+    console.log(`${tag}    Store ID    : ${store_id}`);
+    console.log(`${tag}    Products    : ${product_items?.length || 0} items`);
+
+    const connection = await db.getConnection();
+
+    try {
+        await connection.beginTransaction();
+
+        let discountAmount = 0;
+        let appliedVoucherId = null;
+
+        if (voucher_code) {
+            console.log(`${tag} 🎟️  Validasi voucher: ${voucher_code}`);
+            const [vouchers] = await connection.execute(
+                'SELECT * FROM vouchers WHERE code = ? AND is_active = 1 AND (expired_at > NOW() OR expired_at IS NULL)',
+                [voucher_code]
+            );
+
+            if (vouchers.length > 0) {
+                const v = vouchers[0];
+                const [usageResult] = await connection.execute(
+                    'SELECT COUNT(*) as total_usage FROM voucher_usages WHERE voucher_id = ? AND user_id = ?',
+                    [v.id, customer_id]
+                );
+                const currentUsage = usageResult[0].total_usage;
+                const limit = v.usage_limit || 1;
+
+                if (currentUsage < limit) {
+                    appliedVoucherId = v.id;
+                    discountAmount = Math.floor(rincian_biaya.subtotal_produk * (v.discount_percent / 100));
+                    if (v.max_discount_amount && discountAmount > v.max_discount_amount) {
+                        discountAmount = parseFloat(v.max_discount_amount);
+                    }
+                    console.log(`${tag} ✅ Voucher valid — diskon: Rp${discountAmount.toLocaleString('id-ID')}`);
+                } else {
+                    console.log(`${tag} ⚠️  Voucher sudah dipakai (${currentUsage}/${limit}), diabaikan.`);
+                }
+            } else {
+                console.log(`${tag} ⚠️  Voucher tidak ditemukan / tidak aktif.`);
+            }
+        }
+
+        const finalTotalPrice = rincian_biaya.total_akhir - discountAmount;
+        console.log(`${tag} 💰 Total bayar: Rp${finalTotalPrice.toLocaleString('id-ID')}`);
+
+        // Simpan order dengan tipe 'product'
+        const [orderResult] = await connection.execute(
+            `INSERT INTO orders 
+             (customer_id, store_id, scheduled_date, scheduled_time, building_type, 
+              address_customer, lat_customer, lng_customer, total_price, 
+              platform_fee, service_fee, status, customer_notes, items, voucher_id, discount_amount, order_type) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?, ?, ?, 'product')`,
+            [
+                customer_id,
+                store_id,
+                customerData.delivery_date || new Date().toISOString().split('T')[0],
+                customerData.delivery_time || '08:00',
+                'Rumah',
+                customerData.address || '',
+                customerData.latitude || null,
+                customerData.longitude || null,
+                finalTotalPrice,
+                rincian_biaya.biaya_layanan_app || 0,
+                rincian_biaya.biaya_transaksi || 0,
+                customerData.address_note || null,
+                JSON.stringify(product_items),
+                appliedVoucherId,
+                discountAmount
+            ]
+        );
+
+        const newOrderId = orderResult.insertId;
+        console.log(`${tag} 📋 Order produk dibuat — ID: ${newOrderId}`);
+
+        if (appliedVoucherId) {
+            await connection.execute(
+                'INSERT INTO voucher_usages (voucher_id, user_id, order_id) VALUES (?, ?, ?)',
+                [appliedVoucherId, customer_id, newOrderId]
+            );
+        }
+
+        // Simpan item produk
+        for (const item of product_items) {
+            await connection.execute(
+                `INSERT INTO order_items 
+                 (order_id, product_id, product_name, variant, qty, price_satuan, subtotal) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    newOrderId,
+                    item.id,
+                    item.name,
+                    item.variant || 'Default',
+                    item.qty,
+                    item.priceNumber,
+                    item.priceNumber * item.qty
+                ]
+            );
+        }
+        console.log(`${tag} 📦 ${product_items.length} produk tersimpan`);
+
+        // Update profil customer jika ada
+        if (customerData) {
+            await connection.execute(
+                `UPDATE users SET 
+                    full_name = COALESCE(?, full_name),
+                    phone_number = COALESCE(?, phone_number),
+                    email = COALESCE(?, email),
+                    address = COALESCE(?, address),
+                    latitude = COALESCE(?, latitude),
+                    longitude = COALESCE(?, longitude)
+                 WHERE id = ?`,
+                [
+                    customerData.name || null,
+                    customerData.phone || null,
+                    customerData.email || null,
+                    customerData.address || null,
+                    customerData.latitude || null,
+                    customerData.longitude || null,
+                    customer_id
+                ]
+            );
+        }
+
+        // Simpan payment
+        await connection.execute(
+            `INSERT INTO payments 
+             (order_id, customer_id, payment_method, gross_amount, payment_status) 
+             VALUES (?, ?, ?, ?, 'pending')`,
+            [newOrderId, customer_id, metode_pembayaran, finalTotalPrice]
+        );
+
+        // Log status
+        await connection.execute(
+            `INSERT INTO order_status_logs (order_id, status, notes) 
+             VALUES (?, 'unpaid', 'Pesanan produk dibuat')`,
+            [newOrderId]
+        );
+
+        // Jika ada proteksi, simpan data proteksi
+        if (protection) {
+            await connection.execute(
+                `INSERT INTO order_protections (order_id, is_active, protection_fee) 
+                 VALUES (?, ?, ?)`,
+                [newOrderId, 1, rincian_biaya.biaya_proteksi || 0]
+            );
+        }
+
+        await connection.commit();
+        console.log(`${tag} ✅ Transaksi DB commit berhasil`);
+
+        // Notifikasi ke admin
+        notifyAdmins(
+            '🛒 Pesanan Produk Baru!',
+            `Order #${newOrderId} - ${product_items.length} produk. Total: Rp${finalTotalPrice.toLocaleString('id-ID')}`,
+            newOrderId
+        ).catch((e) => console.error(`${tag} ❌ notifyAdmins error:`, e.message));
+
+        // Notifikasi ke mitra/toko
+        const [storeData] = await connection.execute(
+            'SELECT user_id FROM stores WHERE id = ?',
+            [store_id]
+        );
+        if (storeData.length > 0) {
+            sendToUser(
+                storeData[0].user_id,
+                '📦 Pesanan Produk Masuk!',
+                `Ada pesanan produk baru #${newOrderId} dari pelanggan. Segera proses!`,
+                { type: 'NEW_ORDER', orderId: String(newOrderId), screen: 'OrderDetail' }
+            ).catch((e) => console.error(`${tag} ❌ sendToUser error:`, e.message));
+        }
+
+        res.status(201).json({
+            success: true,
+            message: 'Pesanan produk berhasil dibuat',
+            order_id: newOrderId,
+            order_type: 'product',
+            rincian_pembayaran: {
+                subtotal_awal: rincian_biaya.total_akhir,
+                potongan_diskon: discountAmount,
+                total_bayar: finalTotalPrice,
+                voucher_code: voucher_code || null
+            }
+        });
+
+    } catch (error) {
+        if (connection) await connection.rollback();
+        console.error(`${tag} ❌ Error:`, error.stack);
+        res.status(500).json({
+            success: false,
+            message: 'Gagal membuat pesanan produk',
+            error: error.message
+        });
+    } finally {
+        if (connection) connection.release();
+    }
+};
+
+// ============================================================
+// getOrderDetail - Updated untuk support product & service
 // ============================================================
 exports.getOrderDetail = async (req, res) => {
     const { id } = req.params;
@@ -290,9 +522,16 @@ exports.getOrderDetail = async (req, res) => {
                 (o.total_price + o.discount_amount) AS original_subtotal,
                 FLOOR((o.total_price + o.discount_amount) * (IFNULL(s.commission_rate, 70) / 100)) AS projected_mitra_earning,
                 (SELECT rating FROM reviews WHERE order_id = o.id LIMIT 1) AS already_rated,
+                o.order_type,
                 (SELECT JSON_ARRAYAGG(
-                    JSON_OBJECT('nama', service_name, 'qty', qty, 'hargaSatuan', price_satuan)
-                 ) FROM order_items WHERE order_id = o.id) AS items
+                    JSON_OBJECT(
+                        'nama', IFNULL(oi.product_name, oi.service_name),
+                        'qty', oi.qty,
+                        'hargaSatuan', oi.price_satuan,
+                        'variant', oi.variant,
+                        'type', IF(oi.product_id IS NOT NULL, 'product', 'service')
+                    )
+                 ) FROM order_items oi WHERE oi.order_id = o.id) AS items
             FROM orders o 
             LEFT JOIN users u  ON o.customer_id = u.id 
             LEFT JOIN stores s ON o.store_id    = s.id 
@@ -308,9 +547,146 @@ exports.getOrderDetail = async (req, res) => {
         if (data.proof_image_url && !data.proof_image_url.startsWith('http')) {
             data.proof_image_url = `${req.protocol}://${req.get('host')}/${data.proof_image_url.replace(/\\/g, '/')}`;
         }
+
+        // Parse items jika berupa string
+        if (typeof data.items === 'string') {
+            try {
+                data.items = JSON.parse(data.items);
+            } catch (e) {
+                data.items = [];
+            }
+        }
+
         res.status(200).json({ success: true, data });
     } catch (error) {
+        console.error('[getOrderDetail] Error:', error);
         res.status(500).json({ success: false, message: 'Internal Server Error', error: error.message });
+    }
+};
+
+// ============================================================
+// getStoreOrders - Untuk toko melihat pesanan mereka
+// ============================================================
+exports.getStoreOrders = async (req, res) => {
+    const { storeId } = req.params;
+    try {
+        const [rows] = await db.execute(
+            `SELECT 
+                o.id, o.status, o.total_price, o.discount_amount, 
+                o.scheduled_date, o.scheduled_time, o.order_date,
+                o.order_type,
+                u.full_name AS customer_name,
+                u.phone_number AS customer_phone,
+                u.address AS customer_address,
+                (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) AS total_items
+             FROM orders o
+             JOIN users u ON o.customer_id = u.id
+             WHERE o.store_id = ?
+             ORDER BY o.order_date DESC`,
+            [storeId]
+        );
+        res.status(200).json({ success: true, data: rows });
+    } catch (error) {
+        console.error('[getStoreOrders] Error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+};
+
+// ============================================================
+// updateOrderStatusByStore - Toko update status order
+// ============================================================
+exports.updateOrderStatusByStore = async (req, res) => {
+    const { id } = req.params;
+    const { status, notes } = req.body;
+    const tag = `[updateOrderStatusByStore][Order#${id}]`;
+    const connection = await db.getConnection();
+
+    try {
+        await connection.beginTransaction();
+
+        const [orderData] = await connection.execute(
+            `SELECT o.status, o.customer_id, u.full_name, s.user_id AS store_owner_id
+             FROM orders o 
+             JOIN users u ON o.customer_id = u.id
+             JOIN stores s ON o.store_id = s.id
+             WHERE o.id = ? FOR UPDATE`,
+            [id]
+        );
+
+        if (orderData.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ success: false, message: 'Order tidak ditemukan' });
+        }
+
+        const currentStatus = orderData[0].status;
+        const customerId = orderData[0].customer_id;
+        const customerName = orderData[0].full_name;
+
+        // Validasi status yang valid untuk toko
+        const validStoreStatuses = ['accepted', 'on_the_way', 'working', 'completed', 'cancelled'];
+        if (!validStoreStatuses.includes(status)) {
+            await connection.rollback();
+            return res.status(400).json({
+                success: false,
+                message: 'Status tidak valid untuk toko'
+            });
+        }
+
+        if (['completed', 'cancelled'].includes(currentStatus)) {
+            await connection.rollback();
+            return res.status(400).json({
+                success: false,
+                message: 'Pesanan sudah final'
+            });
+        }
+
+        await connection.execute(
+            'UPDATE orders SET status = ? WHERE id = ?',
+            [status, id]
+        );
+
+        await connection.execute(
+            'INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, ?, ?)',
+            [id, status, notes || `Status diupdate ke ${status} oleh toko`]
+        );
+
+        await connection.commit();
+
+        // Notifikasi ke customer
+        const statusMessages = {
+            accepted: 'Pesanan Anda telah diterima oleh toko',
+            on_the_way: 'Pesanan Anda sedang dalam perjalanan',
+            working: 'Pesanan Anda sedang diproses',
+            completed: 'Pesanan Anda telah selesai ✅',
+            cancelled: 'Pesanan Anda dibatalkan oleh toko ❌'
+        };
+
+        sendToUser(
+            customerId,
+            '📦 Update Pesanan',
+            statusMessages[status] || `Status pesanan: ${status}`,
+            { type: 'ORDER_STATUS_UPDATE', orderId: String(id), screen: 'OrderDetail' }
+        ).catch((e) => console.error(`${tag} ❌ sendToUser error:`, e.message));
+
+        // Notifikasi admin
+        notifyAdmins(
+            '🛠️ Update Status Order oleh Toko',
+            `Order #${id} diubah ke "${status}" oleh toko.`,
+            id
+        ).catch((e) => console.error(`${tag} ❌ notifyAdmins error:`, e.message));
+
+        res.status(200).json({
+            success: true,
+            message: `Status berhasil diupdate ke ${status}`,
+            data: { orderId: id, status }
+        });
+
+    } catch (error) {
+        if (connection) await connection.rollback();
+        console.error(`${tag} ❌ Error:`, error.stack);
+        res.status(500).json({ success: false, message: 'Server error.', error: error.message });
+    } finally {
+        connection.release();
     }
 };
 
@@ -323,7 +699,8 @@ exports.getUserOrders = async (req, res) => {
         const [rows] = await db.execute(
             `SELECT 
                 o.id, o.status, o.total_price, o.discount_amount, 
-                o.scheduled_date, o.scheduled_time, o.order_date, o.cancelled_by, 
+                o.scheduled_date, o.scheduled_time, o.order_date, o.cancelled_by,
+                o.order_type,
                 s.store_name AS mitra_name 
              FROM orders o
              JOIN stores s ON o.store_id = s.id
@@ -333,6 +710,7 @@ exports.getUserOrders = async (req, res) => {
         );
         res.status(200).json({ success: true, data: rows });
     } catch (error) {
+        console.error('[getUserOrders] Error:', error);
         res.status(500).json({ success: false, error: error.message });
     }
 };
@@ -364,12 +742,13 @@ exports.cancelOrder = async (req, res) => {
             res.status(400).json({ success: false, message: 'Pesanan tidak dapat dibatalkan' });
         }
     } catch (error) {
+        console.error('[cancelOrder] Error:', error);
         res.status(500).json({ success: false, error: error.message });
     }
 };
 
 // ============================================================
-// getAllOrdersAdmin
+// getAllOrdersAdmin - Updated dengan order_type
 // ============================================================
 exports.getAllOrdersAdmin = async (req, res) => {
     try {
@@ -377,7 +756,8 @@ exports.getAllOrdersAdmin = async (req, res) => {
             `SELECT 
                 o.id, o.status, o.customer_notes, o.total_price, 
                 o.platform_fee, o.service_fee, o.scheduled_date, o.scheduled_time, 
-                o.order_date, o.cancelled_by, o.cancel_reason, 
+                o.order_date, o.cancelled_by, o.cancel_reason,
+                o.order_type,
                 s.store_name AS mitra_name, 
                 IFNULL(s.commission_rate, 70) AS commission_rate,
                 FLOOR((o.total_price + IFNULL(o.discount_amount, 0)) * (IFNULL(s.commission_rate, 70) / 100)) AS mitra_earning,
@@ -396,6 +776,7 @@ exports.getAllOrdersAdmin = async (req, res) => {
         }));
         res.status(200).json({ success: true, data: normalized });
     } catch (error) {
+        console.error('[getAllOrdersAdmin] Error:', error);
         res.status(500).json({ success: false, error: error.message });
     }
 };
@@ -418,12 +799,13 @@ exports.getRefundHistory = async (req, res) => {
         );
         res.status(200).json({ success: true, data: rows });
     } catch (error) {
+        console.error('[getRefundHistory] Error:', error);
         res.status(500).json({ success: false, error: error.message });
     }
 };
 
 // ============================================================
-// updateOrderStatus (oleh Mitra)
+// updateOrderStatus (oleh Mitra/Service Provider)
 // ============================================================
 exports.updateOrderStatus = async (req, res) => {
     const { id } = req.params;
