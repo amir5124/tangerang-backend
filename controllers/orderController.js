@@ -202,13 +202,15 @@ exports.createOrder = async (req, res) => {
             `INSERT INTO orders 
              (customer_id, store_id, scheduled_date, scheduled_time, building_type, 
               address_customer, lat_customer, lng_customer, total_price, 
-              platform_fee, service_fee, status, customer_notes, items, voucher_id, discount_amount, order_type) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?, ?, ?, 'service')`,
+              platform_fee, service_fee, status, customer_notes, items, 
+              discount_amount, voucher_id, order_type) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?, ?, ?, ?)`,
             [
                 customer_id, store_id, jadwal.tanggal, jadwal.waktu, jenisGedung,
                 lokasi.alamatLengkap, lokasi.latitude, lokasi.longitude, finalTotalPrice,
                 rincian_biaya.biaya_layanan_app, rincian_biaya.biaya_transaksi,
-                catatan || null, JSON.stringify(layananTerpilih), appliedVoucherId, discountAmount
+                catatan || null, JSON.stringify(layananTerpilih),
+                discountAmount, appliedVoucherId, 'service'
             ]
         );
 
@@ -350,29 +352,19 @@ exports.createOrderWithProducts = async (req, res) => {
         const finalTotalPrice = rincian_biaya.total_akhir - discountAmount;
         console.log(`${tag} 💰 Total bayar: Rp${finalTotalPrice.toLocaleString('id-ID')}`);
 
-        // Simpan order dengan tipe 'product'
         const [orderResult] = await connection.execute(
             `INSERT INTO orders 
              (customer_id, store_id, scheduled_date, scheduled_time, building_type, 
               address_customer, lat_customer, lng_customer, total_price, 
-              platform_fee, service_fee, status, customer_notes, items, voucher_id, discount_amount, order_type) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?, ?, ?, 'product')`,
+              platform_fee, service_fee, status, customer_notes, items, 
+              discount_amount, voucher_id, order_type) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?, ?, ?, ?)`,
             [
-                customer_id,
-                store_id,
-                customerData.delivery_date || new Date().toISOString().split('T')[0],
-                customerData.delivery_time || '08:00',
-                'Rumah',
-                customerData.address || '',
-                customerData.latitude || null,
-                customerData.longitude || null,
-                finalTotalPrice,
-                rincian_biaya.biaya_layanan_app || 0,
-                rincian_biaya.biaya_transaksi || 0,
-                customerData.address_note || null,
-                JSON.stringify(product_items),
-                appliedVoucherId,
-                discountAmount
+                customer_id, store_id, jadwal.tanggal, jadwal.waktu, jenisGedung,
+                lokasi.alamatLengkap, lokasi.latitude, lokasi.longitude, finalTotalPrice,
+                rincian_biaya.biaya_layanan_app, rincian_biaya.biaya_transaksi,
+                catatan || null, JSON.stringify(layananTerpilih),
+                discountAmount, appliedVoucherId, 'product'
             ]
         );
 
