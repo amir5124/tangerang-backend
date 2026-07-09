@@ -151,7 +151,7 @@ exports.createOrder = async (req, res) => {
     } = req.body;
 
     const tag = '[createOrder]';
-    console.log(`${tag} === Incoming Request ===`);
+    console.log(`${tag} === Incoming Service Order ===`);
     console.log(`${tag}    Customer ID : ${customer_id}`);
     console.log(`${tag}    Store ID    : ${store_id}`);
     console.log(`${tag}    Metode Bayar: ${metode_pembayaran}`);
@@ -198,19 +198,36 @@ exports.createOrder = async (req, res) => {
         const finalTotalPrice = rincian_biaya.total_akhir - discountAmount;
         console.log(`${tag} 💰 Total bayar: Rp${finalTotalPrice.toLocaleString('id-ID')} (diskon: Rp${discountAmount.toLocaleString('id-ID')})`);
 
+        // Pastikan jadwal dan lokasi ada
+        const scheduledDate = jadwal?.tanggal || new Date().toISOString().split('T')[0];
+        const scheduledTime = jadwal?.waktu || '08:00';
+        const buildingType = jenisGedung || 'Rumah';
+        const addressCustomer = lokasi?.alamatLengkap || '';
+        const latCustomer = lokasi?.latitude || null;
+        const lngCustomer = lokasi?.longitude || null;
+
+        // HAPUS voucher_id dari query INSERT
         const [orderResult] = await connection.execute(
             `INSERT INTO orders 
              (customer_id, store_id, scheduled_date, scheduled_time, building_type, 
               address_customer, lat_customer, lng_customer, total_price, 
-              platform_fee, service_fee, status, customer_notes, items, 
-              discount_amount, voucher_id, order_type) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?, ?, ?, ?)`,
+              platform_fee, service_fee, status, customer_notes, items, discount_amount, order_type) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?, ?, 'service')`,
             [
-                customer_id, store_id, jadwal.tanggal, jadwal.waktu, jenisGedung,
-                lokasi.alamatLengkap, lokasi.latitude, lokasi.longitude, finalTotalPrice,
-                rincian_biaya.biaya_layanan_app, rincian_biaya.biaya_transaksi,
-                catatan || null, JSON.stringify(layananTerpilih),
-                discountAmount, appliedVoucherId, 'service'
+                customer_id,
+                store_id,
+                scheduledDate,
+                scheduledTime,
+                buildingType,
+                addressCustomer,
+                latCustomer,
+                lngCustomer,
+                finalTotalPrice,
+                rincian_biaya.biaya_layanan_app || 0,
+                rincian_biaya.biaya_transaksi || 0,
+                catatan || null,
+                JSON.stringify(layananTerpilih),
+                discountAmount
             ]
         );
 
@@ -245,7 +262,7 @@ exports.createOrder = async (req, res) => {
         await connection.commit();
         console.log(`${tag} ✅ Transaksi DB commit berhasil`);
 
-        // ✅ Notif admin — await agar error terlog, tidak block response
+        // Notif admin
         notifyAdmins(
             '🛒 Pesanan Service Baru!',
             `Order #${newOrderId} - Service dari toko. Total: Rp${finalTotalPrice.toLocaleString('id-ID')}`,
@@ -352,25 +369,47 @@ exports.createOrderWithProducts = async (req, res) => {
         const finalTotalPrice = rincian_biaya.total_akhir - discountAmount;
         console.log(`${tag} 💰 Total bayar: Rp${finalTotalPrice.toLocaleString('id-ID')}`);
 
+        // Ambil data dari customerData (bukan dari jadwal)
+        const scheduledDate = customerData?.delivery_date || new Date().toISOString().split('T')[0];
+        const scheduledTime = customerData?.delivery_time || '08:00';
+        const buildingType = 'Rumah';
+        const addressCustomer = customerData?.address || '';
+        const latCustomer = customerData?.latitude || null;
+        const lngCustomer = customerData?.longitude || null;
+        const customerNotes = customerData?.address_note || null;
+
+        console.log(`${tag} 📅 Tanggal: ${scheduledDate}, Waktu: ${scheduledTime}`);
+        console.log(`${tag} 📍 Alamat: ${addressCustomer}`);
+
+        // Query INSERT tanpa voucher_id (karena belum ada di tabel)
         const [orderResult] = await connection.execute(
             `INSERT INTO orders 
              (customer_id, store_id, scheduled_date, scheduled_time, building_type, 
               address_customer, lat_customer, lng_customer, total_price, 
-              platform_fee, service_fee, status, customer_notes, items, 
-              discount_amount, voucher_id, order_type) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?, ?, ?, ?)`,
+              platform_fee, service_fee, status, customer_notes, items, discount_amount, order_type) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?, ?, 'product')`,
             [
-                customer_id, store_id, jadwal.tanggal, jadwal.waktu, jenisGedung,
-                lokasi.alamatLengkap, lokasi.latitude, lokasi.longitude, finalTotalPrice,
-                rincian_biaya.biaya_layanan_app, rincian_biaya.biaya_transaksi,
-                catatan || null, JSON.stringify(layananTerpilih),
-                discountAmount, appliedVoucherId, 'product'
+                customer_id,
+                store_id,
+                scheduledDate,
+                scheduledTime,
+                buildingType,
+                addressCustomer,
+                latCustomer,
+                lngCustomer,
+                finalTotalPrice,
+                rincian_biaya.biaya_layanan_app || 0,
+                rincian_biaya.biaya_transaksi || 0,
+                customerNotes,
+                JSON.stringify(product_items),
+                discountAmount
             ]
         );
 
         const newOrderId = orderResult.insertId;
         console.log(`${tag} 📋 Order produk dibuat — ID: ${newOrderId}`);
 
+        // Jika ada voucher, simpan di tabel voucher_usages
         if (appliedVoucherId) {
             await connection.execute(
                 'INSERT INTO voucher_usages (voucher_id, user_id, order_id) VALUES (?, ?, ?)',
@@ -493,7 +532,6 @@ exports.createOrderWithProducts = async (req, res) => {
         if (connection) connection.release();
     }
 };
-
 // ============================================================
 // getOrderDetail - Updated untuk support product & service
 // ============================================================
