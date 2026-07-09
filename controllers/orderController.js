@@ -144,6 +144,10 @@ const releaseFundsToMitra = async (connection, orderId) => {
 // ============================================================
 // createOrder - Untuk Service (AC, Sedot WC, ART, dll)
 // ============================================================
+// /app/controllers/orderController.js
+// ============================================================
+// createOrder - Untuk Service (AC, Sedot WC, ART, dll)
+// ============================================================
 exports.createOrder = async (req, res) => {
     const {
         customer_id, store_id, metode_pembayaran, jenisGedung,
@@ -198,7 +202,6 @@ exports.createOrder = async (req, res) => {
         const finalTotalPrice = rincian_biaya.total_akhir - discountAmount;
         console.log(`${tag} 💰 Total bayar: Rp${finalTotalPrice.toLocaleString('id-ID')} (diskon: Rp${discountAmount.toLocaleString('id-ID')})`);
 
-        // Pastikan jadwal dan lokasi ada
         const scheduledDate = jadwal?.tanggal || new Date().toISOString().split('T')[0];
         const scheduledTime = jadwal?.waktu || '08:00';
         const buildingType = jenisGedung || 'Rumah';
@@ -206,13 +209,13 @@ exports.createOrder = async (req, res) => {
         const latCustomer = lokasi?.latitude || null;
         const lngCustomer = lokasi?.longitude || null;
 
-        // HAPUS voucher_id dari query INSERT
         const [orderResult] = await connection.execute(
             `INSERT INTO orders 
              (customer_id, store_id, scheduled_date, scheduled_time, building_type, 
               address_customer, lat_customer, lng_customer, total_price, 
-              platform_fee, service_fee, status, customer_notes, items, discount_amount, order_type) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?, ?, 'service')`,
+              platform_fee, service_fee, status, customer_notes, items, 
+              discount_amount, voucher_id, order_type) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?, ?, ?, 'service')`,
             [
                 customer_id,
                 store_id,
@@ -227,7 +230,8 @@ exports.createOrder = async (req, res) => {
                 rincian_biaya.biaya_transaksi || 0,
                 catatan || null,
                 JSON.stringify(layananTerpilih),
-                discountAmount
+                discountAmount,
+                appliedVoucherId
             ]
         );
 
@@ -262,14 +266,12 @@ exports.createOrder = async (req, res) => {
         await connection.commit();
         console.log(`${tag} ✅ Transaksi DB commit berhasil`);
 
-        // Notif admin
         notifyAdmins(
             '🛒 Pesanan Service Baru!',
             `Order #${newOrderId} - Service dari toko. Total: Rp${finalTotalPrice.toLocaleString('id-ID')}`,
             newOrderId
         ).catch((e) => console.error(`${tag} ❌ notifyAdmins error:`, e.message));
 
-        // Notif ke mitra/toko
         const [storeData] = await connection.execute(
             'SELECT user_id FROM stores WHERE id = ?',
             [store_id]
@@ -292,7 +294,8 @@ exports.createOrder = async (req, res) => {
                 subtotal_awal: rincian_biaya.total_akhir,
                 potongan_diskon: discountAmount,
                 total_bayar: finalTotalPrice,
-                voucher_code: voucher_code || null
+                voucher_code: voucher_code || null,
+                voucher_id: appliedVoucherId
             }
         });
 
@@ -305,10 +308,6 @@ exports.createOrder = async (req, res) => {
     }
 };
 
-// ============================================================
-// createOrderWithProducts - Untuk pembelian produk toko
-// ============================================================
-// /app/controllers/orderController.js
 // ============================================================
 // createOrderWithProducts - Untuk pembelian produk toko
 // ============================================================
@@ -373,7 +372,6 @@ exports.createOrderWithProducts = async (req, res) => {
         const finalTotalPrice = rincian_biaya.total_akhir - discountAmount;
         console.log(`${tag} 💰 Total bayar: Rp${finalTotalPrice.toLocaleString('id-ID')}`);
 
-        // Ambil data dari customerData
         const scheduledDate = customerData?.delivery_date || new Date().toISOString().split('T')[0];
         const scheduledTime = customerData?.delivery_time || '08:00';
         const buildingType = 'Rumah';
@@ -385,13 +383,13 @@ exports.createOrderWithProducts = async (req, res) => {
         console.log(`${tag} 📅 Tanggal: ${scheduledDate}, Waktu: ${scheduledTime}`);
         console.log(`${tag} 📍 Alamat: ${addressCustomer}`);
 
-        // Query INSERT tanpa voucher_id
         const [orderResult] = await connection.execute(
             `INSERT INTO orders 
              (customer_id, store_id, scheduled_date, scheduled_time, building_type, 
               address_customer, lat_customer, lng_customer, total_price, 
-              platform_fee, service_fee, status, customer_notes, items, discount_amount, order_type) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?, ?, 'product')`,
+              platform_fee, service_fee, status, customer_notes, items, 
+              discount_amount, voucher_id, order_type) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?, ?, ?, 'product')`,
             [
                 customer_id,
                 store_id,
@@ -406,14 +404,14 @@ exports.createOrderWithProducts = async (req, res) => {
                 rincian_biaya.biaya_transaksi || 0,
                 customerNotes,
                 JSON.stringify(product_items),
-                discountAmount
+                discountAmount,
+                appliedVoucherId
             ]
         );
 
         const newOrderId = orderResult.insertId;
         console.log(`${tag} 📋 Order produk dibuat — ID: ${newOrderId}`);
 
-        // Jika ada voucher, simpan di tabel voucher_usages
         if (appliedVoucherId) {
             await connection.execute(
                 'INSERT INTO voucher_usages (voucher_id, user_id, order_id) VALUES (?, ?, ?)',
@@ -421,7 +419,6 @@ exports.createOrderWithProducts = async (req, res) => {
             );
         }
 
-        // Simpan item produk
         for (const item of product_items) {
             await connection.execute(
                 `INSERT INTO order_items 
@@ -441,14 +438,8 @@ exports.createOrderWithProducts = async (req, res) => {
         }
         console.log(`${tag} 📦 ${product_items.length} produk tersimpan`);
 
-        // HAPUS atau PERBAIKI update profil customer
-        // Karena kolom 'address' mungkin tidak ada di tabel users
-        // Kita hanya update field yang pasti ada
         try {
-            // Cek kolom yang ada di tabel users terlebih dahulu
-            // Atau hanya update field yang pasti ada: full_name, phone_number, email
             if (customerData) {
-                // Update hanya field yang pasti ada
                 const updateFields = [];
                 const updateValues = [];
 
@@ -465,7 +456,6 @@ exports.createOrderWithProducts = async (req, res) => {
                     updateValues.push(customerData.email);
                 }
 
-                // Hanya jalankan jika ada field yang diupdate
                 if (updateFields.length > 0) {
                     updateValues.push(customer_id);
                     await connection.execute(
@@ -476,46 +466,46 @@ exports.createOrderWithProducts = async (req, res) => {
                 }
             }
         } catch (updateError) {
-            // Jika gagal update profil, log error tapi lanjutkan
             console.warn(`${tag} ⚠️  Gagal update profil customer:`, updateError.message);
-            // Tidak throw error, biarkan order tetap terbuat
         }
 
-        // Simpan payment
         await connection.execute(
             `INSERT INTO payments 
              (order_id, customer_id, payment_method, gross_amount, payment_status) 
-             VALUES (?, ?, ?, ?, 'pending')`,
-            [newOrderId, customer_id, metode_pembayaran, finalTotalPrice]
+             VALUES (?, ?, ?, ?, ?)`,
+            [newOrderId, customer_id, metode_pembayaran, finalTotalPrice, 'pending']
         );
+        console.log(`${tag} ✅ Payment tersimpan (status: pending)`);
 
-        // Log status
         await connection.execute(
             `INSERT INTO order_status_logs (order_id, status, notes) 
              VALUES (?, 'unpaid', 'Pesanan produk dibuat')`,
             [newOrderId]
         );
+        console.log(`${tag} ✅ Status log tersimpan`);
 
-        // Jika ada proteksi, simpan data proteksi
         if (protection) {
-            await connection.execute(
-                `INSERT INTO order_protections (order_id, is_active, protection_fee) 
-                 VALUES (?, ?, ?)`,
-                [newOrderId, 1, rincian_biaya.biaya_proteksi || 0]
-            );
+            try {
+                await connection.execute(
+                    `INSERT INTO order_protections (order_id, is_active, protection_fee) 
+                     VALUES (?, ?, ?)`,
+                    [newOrderId, 1, rincian_biaya.biaya_proteksi || 0]
+                );
+                console.log(`${tag} ✅ Proteksi tersimpan`);
+            } catch (protError) {
+                console.warn(`${tag} ⚠️  Gagal simpan proteksi:`, protError.message);
+            }
         }
 
         await connection.commit();
         console.log(`${tag} ✅ Transaksi DB commit berhasil`);
 
-        // Notifikasi ke admin
         notifyAdmins(
             '🛒 Pesanan Produk Baru!',
             `Order #${newOrderId} - ${product_items.length} produk. Total: Rp${finalTotalPrice.toLocaleString('id-ID')}`,
             newOrderId
         ).catch((e) => console.error(`${tag} ❌ notifyAdmins error:`, e.message));
 
-        // Notifikasi ke mitra/toko
         const [storeData] = await connection.execute(
             'SELECT user_id FROM stores WHERE id = ?',
             [store_id]
@@ -538,7 +528,8 @@ exports.createOrderWithProducts = async (req, res) => {
                 subtotal_awal: rincian_biaya.total_akhir,
                 potongan_diskon: discountAmount,
                 total_bayar: finalTotalPrice,
-                voucher_code: voucher_code || null
+                voucher_code: voucher_code || null,
+                voucher_id: appliedVoucherId
             }
         });
 
