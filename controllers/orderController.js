@@ -418,11 +418,12 @@ exports.createOrderWithProducts = async (req, res) => {
         }
 
         // Simpan item produk
+        // Simpan item produk - isi service_name dengan nama produk
         for (const item of product_items) {
             await connection.execute(
                 `INSERT INTO order_items 
-                 (order_id, product_id, product_name, variant, qty, price_satuan, subtotal) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (order_id, product_id, product_name, variant, qty, price_satuan, subtotal, service_name) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
                     newOrderId,
                     item.id,
@@ -430,7 +431,8 @@ exports.createOrderWithProducts = async (req, res) => {
                     item.variant || 'Default',
                     item.qty,
                     item.priceNumber,
-                    item.priceNumber * item.qty
+                    item.priceNumber * item.qty,
+                    item.name // Isi service_name dengan nama produk
                 ]
             );
         }
