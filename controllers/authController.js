@@ -17,7 +17,7 @@ const GOOGLE_CLIENT_ID_CUSTOMER = "206607018424-vpr9bdfrk6oedfcvouf5i5e3lan7ckoh
 const client = new OAuth2Client(GOOGLE_CLIENT_ID_ADMIN);
 
 const generateToken = (user) => {
-    return jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '365d' }); // 1 tahun
+    return jwt.sign({ id: user.id, role: user.role }, JWT_SECRET);
 };
 
 // ─────────────────────────────────────────────
@@ -339,19 +339,22 @@ exports.login = async (req, res) => {
     }
 };
 
-// ============================================================
-// LOGOUT
-// ============================================================
 exports.logout = async (req, res) => {
     const userId = req.user ? req.user.id : req.body.userId;
+    const { fcm_token } = req.body; // ✅ ambil token device yang logout
     const tag = `[logout][UID:${userId}]`;
 
     try {
-        // Hapus fcm_token dari tabel users
-        await db.query('UPDATE users SET fcm_token = NULL WHERE id = ?', [userId]);
-
-        // Nonaktifkan semua device user ini
-        await db.query('UPDATE user_devices SET is_active = 0 WHERE user_id = ?', [userId]);
+        if (fcm_token) {
+            // Nonaktifkan HANYA device yang sedang logout
+            await db.query(
+                'UPDATE user_devices SET is_active = 0 WHERE user_id = ? AND fcm_token = ?',
+                [userId, fcm_token]
+            );
+        } else {
+            // Fallback: kalau client tidak kirim token, nonaktifkan semua (perilaku lama)
+            await db.query('UPDATE user_devices SET is_active = 0 WHERE user_id = ?', [userId]);
+        }
 
         console.log(`${tag} 🚪 Logout berhasil`);
         return res.json({ success: true, message: 'Logout berhasil' });
