@@ -37,26 +37,27 @@ const detectDeviceType = (userAgent = '') => {
 // ─────────────────────────────────────────────
 const upsertDeviceToken = async (userId, fcmToken, userAgent = '') => {
     if (!fcmToken || fcmToken === 'NO_TOKEN' || fcmToken === 'null' ||
-        fcmToken.trim() === '' || fcmToken.startsWith('WEB_NO_TOKEN')) return;
+        fcmToken.trim() === '' || fcmToken.startsWith('WEB_NO_TOKEN') ||
+        fcmToken === 'WEB_TOKEN') return; // ✅ tambahan: tolak literal WEB_TOKEN
 
     const deviceType = detectDeviceType(userAgent);
 
     try {
         await db.query('UPDATE users SET fcm_token = ? WHERE id = ?', [fcmToken, userId]);
 
-        // ✅ TAMBAHAN — nonaktifkan token ini jika dipakai user lain (ganti akun)
-        await db.query(
-            'UPDATE user_devices SET is_active = 0 WHERE fcm_token = ? AND user_id != ?',
-            [fcmToken, userId]
-        );
+        // ❌ DIHAPUS — ini yang bikin user lain saling menonaktifkan
+        // await db.query(
+        //     'UPDATE user_devices SET is_active = 0 WHERE fcm_token = ? AND user_id != ?',
+        //     [fcmToken, userId]
+        // );
 
-        // Nonaktifkan token lama milik user ini
+        // Nonaktifkan token LAMA milik user ini sendiri saja (tetap dipertahankan — ini benar)
         await db.query(
             'UPDATE user_devices SET is_active = 0 WHERE user_id = ? AND fcm_token != ?',
             [userId, fcmToken]
         );
 
-        // Upsert token baru
+        // Upsert token baru — aman karena unique key (user_id, fcm_token)
         await db.query(`
             INSERT INTO user_devices (user_id, fcm_token, device_type, is_active, last_used_at)
             VALUES (?, ?, ?, 1, NOW())
