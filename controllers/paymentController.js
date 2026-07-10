@@ -2,8 +2,20 @@ const db = require('../config/db');
 const linkqu = require('../services/linkquService');
 const helpers = require('../utils/helpers');
 const { sendInvoiceEmail } = require('../utils/emailService');
-const { sendPushNotification } = require('../services/notificationService'); // Tambahkan ini
+const { sendToUser, sendToRole } = require('../services/notificationService'); // ✅ diganti dari sendPushNotification
 const moment = require('moment-timezone');
+
+// ─────────────────────────────────────────────
+// HELPER: Ambil nama item pertama dari items (support service & product)
+// items bisa berbentuk [{nama, qty, ...}] (service) atau [{name, ...}] (product)
+// ─────────────────────────────────────────────
+const buildItemsSummary = (itemsDetail) => {
+    if (!itemsDetail || itemsDetail.length === 0) return 'pesanan';
+    const first = itemsDetail[0];
+    const firstName = first.nama || first.name || 'Item';
+    const sisa = itemsDetail.length - 1;
+    return firstName + (sisa > 0 ? ` dan ${sisa} lainnya` : '');
+};
 
 exports.createPayment = async (req, res) => {
     console.log("==========================================");
@@ -155,6 +167,11 @@ exports.createPayment = async (req, res) => {
     }
 };
 
+// ============================================================
+// handleCallback — Webhook dari LinkQu
+// ✅ Diperbaiki: notifikasi pakai sendToUser/sendToRole (user_devices)
+//    Berlaku untuk order_type 'service' maupun 'product' (bahan bangunan)
+// ============================================================
 exports.handleCallback = async (req, res) => {
     const connection = await db.getConnection();
     try {
@@ -164,13 +181,15 @@ exports.handleCallback = async (req, res) => {
         if (status === 'SUCCESS' || status === 'SETTLED') {
             await connection.beginTransaction();
 
+            // ✅ Tidak lagi ambil fcm_token dari kolom users, cukup ambil ID
+            //    order_type juga diambil supaya bisa dibedakan jasa vs produk kalau perlu
             const [rows] = await connection.execute(
                 `SELECT 
                     o.id AS order_id, o.items, o.building_type, o.scheduled_date, 
                     o.scheduled_time, o.address_customer, o.customer_notes, o.total_price,
+                    o.order_type, o.customer_id,
                     u.full_name AS customer_name, u.email AS customer_email, u.phone_number,
-                    u.fcm_token AS customer_fcm, 
-                    m.fcm_token AS mitra_fcm, m.full_name AS mitra_name
+                    s.user_id AS mitra_user_id, m.full_name AS mitra_name, s.store_name
                  FROM payments p
                  JOIN orders o ON p.order_id = o.id
                  JOIN users u ON o.customer_id = u.id
@@ -189,7 +208,7 @@ exports.handleCallback = async (req, res) => {
                     [partner_reff]
                 );
 
-                // 2. PERUBAHAN: Ubah status order ke 'pending' agar muncul di aplikasi Mitra
+                // 2. Ubah status order ke 'pending' agar muncul di aplikasi Mitra
                 await connection.execute(
                     "UPDATE orders SET status = 'pending' WHERE id = ?",
                     [order.order_id]
@@ -201,72 +220,60 @@ exports.handleCallback = async (req, res) => {
                 );
 
                 await connection.commit();
-                console.log(`✅ Order #${order.order_id} is now LIVE for Mitra.`);
+                console.log(`✅ Order #${order.order_id} is now LIVE for Mitra. (type: ${order.order_type || 'service'})`);
 
                 const itemsDetail = typeof order.items === 'string' ? JSON.parse(order.items) : order.items;
+                const teksItem = buildItemsSummary(itemsDetail);
+                const isProduct = order.order_type === 'product';
+                const jenisPesanan = isProduct ? 'pesanan produk' : 'pesanan jasa';
 
-                // 3. Notifikasi ke Mitra
-                if (order.mitra_fcm) {
-                    try {
-                        let teksLayanan = "Jasa";
-                        if (itemsDetail && itemsDetail.length > 0) {
-                            teksLayanan = itemsDetail[0].nama + (itemsDetail.length > 1 ? ` dan ${itemsDetail.length - 1} lainnya` : "");
-                        }
-
-                        await sendPushNotification(
-                            order.mitra_fcm,
-                            "Pesanan Baru Masuk! 🔔",
-                            `Halo ${order.mitra_name}, ada pesanan jasa ${teksLayanan} masuk.`,
-                            {
-                                orderId: String(order.order_id),
-                                type: "NEW_ORDER",
-                                status: "pending"
-                            }
-                        );
-                    } catch (fcmErr) {
-                        console.error("⚠️ FCM Mitra Error:", fcmErr.message);
-                    }
-                }
-
-                // 4. Notifikasi ke Customer
-                if (order.customer_fcm) {
-                    try {
-                        await sendPushNotification(
-                            order.customer_fcm,
-                            "Pembayaran Berhasil! ✅",
-                            `Halo ${order.customer_name}, pembayaran sukses. Menunggu konfirmasi dari teknisi.`,
-                            {
-                                orderId: String(order.order_id),
-                                type: "PAYMENT_SUCCESS",
-                                status: "pending"
-                            }
-                        );
-                    } catch (fcmErr) {
-                        console.error("⚠️ FCM Customer Error:", fcmErr.message);
-                    }
-                }
-
-                // 5. TAMBAHAN: Notifikasi ke Admin (Role Admin)
+                // 3. Notifikasi ke Mitra — via user_devices (support banyak device)
                 try {
-                    const [admins] = await connection.execute(
-                        "SELECT fcm_token FROM users WHERE role = 'admin' AND fcm_token IS NOT NULL"
-                    );
-
-                    if (admins.length > 0) {
-                        for (const admin of admins) {
-                            await sendPushNotification(
-                                admin.fcm_token,
-                                "Ada Orderan Baru!",
-                                `Order #${order.order_id} sebesar Rp ${parseInt(order.total_price).toLocaleString("id-ID")} telah dibayar oleh ${order.customer_name}.`,
-                                {
-                                    orderId: String(order.order_id),
-                                    type: "ADMIN_NEW_ORDER",
-                                    status: "pending"
-                                }
-                            );
+                    await sendToUser(
+                        order.mitra_user_id,
+                        isProduct ? "Pesanan Produk Baru! 📦" : "Pesanan Baru Masuk! 🔔",
+                        `Halo ${order.mitra_name}, ada ${jenisPesanan} ${teksItem} masuk di toko ${order.store_name}.`,
+                        {
+                            orderId: String(order.order_id),
+                            type: "NEW_ORDER",
+                            status: "pending",
+                            screen: "OrderDetail"
                         }
-                        console.log(`📢 Admin Notification sent to ${admins.length} admins.`);
-                    }
+                    );
+                } catch (fcmErr) {
+                    console.error("⚠️ FCM Mitra Error:", fcmErr.message);
+                }
+
+                // 4. Notifikasi ke Customer — via user_devices
+                try {
+                    await sendToUser(
+                        order.customer_id,
+                        "Pembayaran Berhasil! ✅",
+                        `Halo ${order.customer_name}, pembayaran sukses. Menunggu konfirmasi dari ${isProduct ? 'toko' : 'teknisi'}.`,
+                        {
+                            orderId: String(order.order_id),
+                            type: "PAYMENT_SUCCESS",
+                            status: "pending",
+                            screen: "OrderDetail"
+                        }
+                    );
+                } catch (fcmErr) {
+                    console.error("⚠️ FCM Customer Error:", fcmErr.message);
+                }
+
+                // 5. Notifikasi ke Admin — via sendToRole (user_devices, semua admin sekaligus)
+                try {
+                    await sendToRole(
+                        'admin',
+                        "Ada Orderan Baru!",
+                        `Order #${order.order_id} sebesar Rp ${parseInt(order.total_price).toLocaleString("id-ID")} telah dibayar oleh ${order.customer_name}.`,
+                        {
+                            orderId: String(order.order_id),
+                            type: "ADMIN_NEW_ORDER",
+                            status: "pending",
+                            screen: "OrderDetail"
+                        }
+                    );
                 } catch (adminFcmErr) {
                     console.error("⚠️ FCM Admin Error:", adminFcmErr.message);
                 }

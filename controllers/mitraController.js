@@ -1,7 +1,9 @@
 // /app/controllers/mitraController.js
 // ============================================================
 // Mitra Controller
-// ✅ FIX: approveMitra & rejectMitra — notif via sendToUser(user_id)
+// ✅ FIX: approveMitra, rejectMitra, approveMitraUser,
+//         revertRejectedToPending, revertApprovedToPending,
+//         rejectMitraUser — semua notif via sendToUser(user_id)
 //         bukan dari users.fcm_token langsung
 //         Konsisten dengan notificationService multi-device
 // ============================================================
@@ -564,6 +566,7 @@ exports.rejectMitra = async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────
 // revertRejectedToPending
+// ✅ FIX: Tambah notif ke mitra — akun mereka bisa diajukan ulang
 // ─────────────────────────────────────────────────────────────
 exports.revertRejectedToPending = async (req, res) => {
     const { id } = req.params;
@@ -571,15 +574,16 @@ exports.revertRejectedToPending = async (req, res) => {
     console.log(`${LOG} Memulai revert rejected → pending...`);
 
     try {
+        // ✅ Tambahkan user_id ke SELECT
         const [storeData] = await db.query(
-            'SELECT store_name, approval_status FROM stores WHERE id = ?',
+            'SELECT store_name, approval_status, user_id FROM stores WHERE id = ?',
             [id]
         );
         if (!storeData || storeData.length === 0) {
             return res.status(404).json({ success: false, message: 'Data Mitra tidak ditemukan' });
         }
 
-        const { store_name, approval_status } = storeData[0];
+        const { store_name, approval_status, user_id } = storeData[0];
         if (approval_status !== 'rejected') {
             return res.status(400).json({
                 success: false,
@@ -599,6 +603,20 @@ exports.revertRejectedToPending = async (req, res) => {
         }
 
         console.log(`${LOG} ✅ "${store_name}" dikembalikan ke pending.`);
+
+        // ✅ Kirim notif ke mitra — pengajuan mereka bisa diproses ulang
+        console.log(`${LOG} 📤 Kirim notif revert-to-pending ke user_id: ${user_id}`);
+        sendToUser(
+            user_id,
+            'Pendaftaran Anda Ditinjau Ulang 🔄',
+            `Halo ${store_name}, status pendaftaran Anda dikembalikan ke pending dan akan ditinjau ulang oleh admin. Silakan lengkapi kembali data jika diperlukan.`,
+            {
+                storeId: String(id),
+                type: 'MITRA_REVERTED_PENDING',
+                status: 'pending',
+            }
+        ).catch((e) => console.error(`${LOG} ❌ sendToUser gagal: ${e.message}`));
+
         res.json({
             success: true,
             message: `Mitra ${store_name} berhasil dikembalikan ke status pending. Mitra dapat mengajukan ulang pendaftaran.`,
@@ -612,6 +630,7 @@ exports.revertRejectedToPending = async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────
 // revertApprovedToPending
+// ✅ FIX: Tambah notif ke mitra — toko mereka dinonaktifkan sementara
 // ─────────────────────────────────────────────────────────────
 exports.revertApprovedToPending = async (req, res) => {
     const { id } = req.params;
@@ -620,15 +639,16 @@ exports.revertApprovedToPending = async (req, res) => {
     console.log(`${LOG} Memulai revert approved → pending...`);
 
     try {
+        // ✅ Tambahkan user_id ke SELECT
         const [storeData] = await db.query(
-            'SELECT store_name, approval_status FROM stores WHERE id = ?',
+            'SELECT store_name, approval_status, user_id FROM stores WHERE id = ?',
             [id]
         );
         if (!storeData || storeData.length === 0) {
             return res.status(404).json({ success: false, message: 'Data Mitra tidak ditemukan' });
         }
 
-        const { store_name, approval_status } = storeData[0];
+        const { store_name, approval_status, user_id } = storeData[0];
         if (approval_status !== 'approved') {
             return res.status(400).json({
                 success: false,
@@ -636,11 +656,13 @@ exports.revertApprovedToPending = async (req, res) => {
             });
         }
 
+        const reasonText = rejection_reason || 'Verifikasi ulang oleh admin';
+
         const [result] = await db.query(
             `UPDATE stores 
              SET approval_status = 'pending', is_active = 0, rejection_reason = ? 
              WHERE id = ?`,
-            [rejection_reason || 'Verifikasi ulang oleh admin', id]
+            [reasonText, id]
         );
 
         if (result.affectedRows === 0) {
@@ -648,6 +670,20 @@ exports.revertApprovedToPending = async (req, res) => {
         }
 
         console.log(`${LOG} ✅ "${store_name}" dikembalikan ke pending untuk verifikasi ulang.`);
+
+        // ✅ Kirim notif ke mitra — akun aktif mereka dinonaktifkan sementara
+        console.log(`${LOG} 📤 Kirim notif revert-approved ke user_id: ${user_id}`);
+        sendToUser(
+            user_id,
+            'Akun Toko Perlu Verifikasi Ulang ⚠️',
+            `Halo ${store_name}, akun toko Anda untuk sementara dinonaktifkan dan perlu ditinjau ulang oleh admin. Alasan: ${reasonText}`,
+            {
+                storeId: String(id),
+                type: 'MITRA_REVERTED_PENDING',
+                status: 'pending',
+            }
+        ).catch((e) => console.error(`${LOG} ❌ sendToUser gagal: ${e.message}`));
+
         res.json({
             success: true,
             message: `Mitra ${store_name} berhasil dikembalikan ke status pending untuk verifikasi ulang.`,
@@ -731,11 +767,26 @@ exports.getAllUsersWithMitraStatus = async (req, res) => {
 
 // ─────────────────────────────────────────────────────────────
 // rejectMitraUser
+// ✅ FIX: Tambah rejection_reason (fallback generic) + notif via sendToUser
 // ─────────────────────────────────────────────────────────────
 exports.rejectMitraUser = async (req, res) => {
     const { id } = req.params;
+    const { rejection_reason } = req.body; // ✅ terima alasan dari body (opsional)
     const LOG = `[rejectMitraUser][UserID:${id}]`;
+
     try {
+        // ✅ Ambil dulu nama user sebelum role diubah, untuk keperluan pesan notif
+        const [userRows] = await db.query(
+            "SELECT id, full_name FROM users WHERE id = ? AND role = 'mitra'",
+            [id]
+        );
+
+        if (userRows.length === 0) {
+            return res.status(404).json({ success: false, message: 'User tidak ditemukan atau bukan mitra' });
+        }
+
+        const { full_name } = userRows[0];
+
         const [result] = await db.query(
             "UPDATE users SET role = 'customer', updated_at = NOW() WHERE id = ? AND role = 'mitra'",
             [id]
@@ -746,6 +797,25 @@ exports.rejectMitraUser = async (req, res) => {
         }
 
         console.log(`${LOG} ✅ Role diubah ke customer.`);
+
+        // ✅ Fallback generic kalau rejection_reason tidak diisi
+        const alasanText = rejection_reason
+            ? `Alasan: ${rejection_reason}`
+            : 'Silakan hubungi admin untuk informasi lebih lanjut.';
+
+        // ✅ Kirim notif via sendToUser — akun dikembalikan ke customer
+        console.log(`${LOG} 📤 Kirim notif penolakan ke user_id: ${id}`);
+        sendToUser(
+            id,
+            'Pendaftaran Mitra Ditolak ❌',
+            `Halo ${full_name}, pendaftaran Anda sebagai mitra ditolak dan akun Anda dikembalikan menjadi akun customer. ${alasanText}`,
+            {
+                userId: String(id),
+                type: 'MITRA_USER_REJECTED',
+                status: 'rejected',
+            }
+        ).catch((e) => console.error(`${LOG} ❌ sendToUser gagal: ${e.message}`));
+
         res.json({ success: true, message: 'Pendaftaran mitra ditolak' });
     } catch (error) {
         console.error(`${LOG} ❌ Error: ${error.message}`);
