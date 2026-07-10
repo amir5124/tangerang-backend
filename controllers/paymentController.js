@@ -282,6 +282,123 @@ exports.handleCallback = async (req, res) => {
     }
 };
 
+
+// ============================================================
+exports.createPaymentForOrder = async (req, res) => {
+    const { order_id, amount, customer_name, customer_email, customer_phone, bank_code } = req.body;
+    const isQRIS = req.isQRIS === true; // di-set oleh middleware route, lihat routes.js
+
+    const tag = `[createPaymentForOrder][Order#${order_id}]`;
+    console.log(`${tag} === Membuat pembayaran ${isQRIS ? 'QRIS' : 'VA'} ===`);
+
+    if (!order_id || !amount) {
+        return res.status(400).json({ success: false, message: "order_id dan amount wajib diisi" });
+    }
+    if (!isQRIS && !bank_code) {
+        return res.status(400).json({ success: false, message: "bank_code wajib diisi untuk pembayaran VA" });
+    }
+
+    const connection = await db.getConnection();
+    try {
+        await connection.beginTransaction();
+
+        // Kunci baris order + payment terkait, cegah race condition
+        const [rows] = await connection.execute(
+            `SELECT o.customer_id, p.id AS payment_id, p.payment_status 
+             FROM orders o 
+             LEFT JOIN payments p ON p.order_id = o.id 
+             WHERE o.id = ? FOR UPDATE`,
+            [order_id]
+        );
+
+        if (rows.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ success: false, message: "Order tidak ditemukan" });
+        }
+
+        const { customer_id, payment_id, payment_status } = rows[0];
+
+        if (!payment_id) {
+            await connection.rollback();
+            console.error(`${tag} ❌ Tidak ada payment placeholder untuk order ini`);
+            return res.status(400).json({ success: false, message: "Belum ada record payment untuk order ini" });
+        }
+
+        if (payment_status && payment_status !== 'pending') {
+            await connection.rollback();
+            return res.status(400).json({
+                success: false,
+                message: `Pembayaran untuk order ini sudah berstatus '${payment_status}'`
+            });
+        }
+
+        const partner_reff = helpers.generatePartnerReff();
+        const duration = isQRIS ? 30 : 1440;
+        const expiredMoment = moment().tz('Asia/Jakarta').add(duration, 'minutes');
+        const expired = expiredMoment.format('YYYYMMDDHHmmss');
+        const formattedExpired = expiredMoment.format('YYYY-MM-DD HH:mm:ss');
+
+        const finalEmail = helpers.isValidEmail(customer_email) ? customer_email : process.env.DEFAULT_EMAIL;
+
+        const payload = {
+            amount,
+            partner_reff,
+            expired,
+            method: isQRIS ? 'QRIS' : bank_code.toUpperCase(), // cocok dengan bankMapping di linkquService
+            nama: customer_name,
+            email: finalEmail,
+            customer_id,
+            wa: customer_phone
+        };
+
+        console.log(`${tag} Payload ke LinkQu:`, payload);
+
+        const linkquRes = isQRIS ? await linkqu.createQRIS(payload) : await linkqu.createVA(payload);
+
+        if (!linkquRes.data || linkquRes.data.status !== 'SUCCESS') {
+            throw new Error(linkquRes.data?.message || "Gagal mendapatkan respon dari LinkQu");
+        }
+
+        // UPDATE baris payments placeholder — bukan INSERT
+        await connection.execute(
+            `UPDATE payments 
+             SET payment_method = ?, transaction_id = ?, gross_amount = ?, 
+                 payment_type = ?, expired_at = ?, payment_details = ?
+             WHERE id = ?`,
+            [
+                isQRIS ? 'QRIS' : bank_code,
+                partner_reff,
+                amount,
+                isQRIS ? 'QRIS' : 'VA',
+                formattedExpired,
+                JSON.stringify(linkquRes.data),
+                payment_id
+            ]
+        );
+
+        await connection.commit();
+        console.log(`${tag} ✅ Payment dibuat — reff: ${partner_reff}, expired: ${formattedExpired}`);
+
+        res.json({
+            success: true,
+            data: {
+                va_number: linkquRes.data.virtual_account || null,
+                qris_url: linkquRes.data.imageqris || null,
+                expired_at: formattedExpired,
+                amount,
+                partner_reff
+            }
+        });
+
+    } catch (err) {
+        if (connection) await connection.rollback();
+        console.error(`${tag} ❌ Error:`, err.message);
+        res.status(500).json({ success: false, message: err.message || "Internal Server Error" });
+    } finally {
+        connection.release();
+    }
+};
+
 exports.checkPaymentStatus = async (req, res) => {
     const { partnerReff } = req.params;
     const connection = await db.getConnection();
