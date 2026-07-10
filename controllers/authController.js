@@ -16,11 +16,8 @@ const GOOGLE_CLIENT_ID_CUSTOMER = "206607018424-vpr9bdfrk6oedfcvouf5i5e3lan7ckoh
 
 const client = new OAuth2Client(GOOGLE_CLIENT_ID_ADMIN);
 
-// ─────────────────────────────────────────────
-// HELPER: Generate JWT token
-// ─────────────────────────────────────────────
 const generateToken = (user) => {
-    return jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
+    return jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: '365d' }); // 1 tahun
 };
 
 // ─────────────────────────────────────────────
