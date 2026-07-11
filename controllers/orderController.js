@@ -369,13 +369,30 @@ exports.createOrderWithProducts = async (req, res) => {
             }
         }
 
-        const finalTotalPrice = rincian_biaya.total_akhir - discountAmount;
-        console.log(`${tag} 💰 Total bayar: Rp${finalTotalPrice.toLocaleString('id-ID')}`);
+        // 🔥 PERBAIKAN: Hitung ulang total dengan benar
+        const subtotalAmount = rincian_biaya.subtotal_produk || rincian_biaya.subtotal_layanan || 0;
+        const serviceFee = rincian_biaya.biaya_layanan_app || 0;
+        const transactionFee = rincian_biaya.biaya_transaksi || 0;
+        const shippingFee = rincian_biaya.biaya_pengiriman || 0;
+        const protectionFee = rincian_biaya.biaya_proteksi || 0;
+
+        // Total akhir = subtotal + service_fee + transaction_fee + shipping_fee + protection_fee - discount
+        const finalTotalPrice = subtotalAmount + serviceFee + transactionFee + shippingFee + protectionFee - discountAmount;
+
+        console.log(`${tag} 💰 Rincian Biaya:`);
+        console.log(`${tag}    Subtotal        : Rp${subtotalAmount.toLocaleString('id-ID')}`);
+        console.log(`${tag}    Service Fee     : Rp${serviceFee.toLocaleString('id-ID')}`);
+        console.log(`${tag}    Transaction Fee : Rp${transactionFee.toLocaleString('id-ID')}`);
+        console.log(`${tag}    Shipping Fee    : Rp${shippingFee.toLocaleString('id-ID')}`);
+        console.log(`${tag}    Protection Fee  : Rp${protectionFee.toLocaleString('id-ID')}`);
+        console.log(`${tag}    Discount        : -Rp${discountAmount.toLocaleString('id-ID')}`);
+        console.log(`${tag}    Total           : Rp${finalTotalPrice.toLocaleString('id-ID')}`);
 
         const scheduledDate = customerData?.delivery_date || new Date().toISOString().split('T')[0];
         const scheduledTime = customerData?.delivery_time || '08:00';
         const buildingType = 'Rumah';
         const addressCustomer = customerData?.address || '';
+        const addressNote = customerData?.address_note || null;
         const latCustomer = customerData?.latitude || null;
         const lngCustomer = customerData?.longitude || null;
         const customerNotes = customerData?.address_note || null;
@@ -383,13 +400,17 @@ exports.createOrderWithProducts = async (req, res) => {
         console.log(`${tag} 📅 Tanggal: ${scheduledDate}, Waktu: ${scheduledTime}`);
         console.log(`${tag} 📍 Alamat: ${addressCustomer}`);
 
+        // 🔥 PERBAIKAN: INSERT dengan semua kolom yang diperlukan
         const [orderResult] = await connection.execute(
             `INSERT INTO orders 
              (customer_id, store_id, scheduled_date, scheduled_time, building_type, 
-              address_customer, lat_customer, lng_customer, total_price, 
-              platform_fee, service_fee, status, customer_notes, items, 
-              discount_amount, voucher_id, order_type) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpaid', ?, ?, ?, ?, 'product')`,
+              address_customer, address_note, lat_customer, lng_customer, 
+              customer_phone, customer_email,
+              total_price, subtotal, platform_fee, service_fee, transaction_fee, shipping_fee,
+              status, payment_status, customer_notes, items, 
+              discount_amount, voucher_id, voucher_code, order_type, 
+              delivery_option, protection, payment_method) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
                 customer_id,
                 store_id,
@@ -397,15 +418,28 @@ exports.createOrderWithProducts = async (req, res) => {
                 scheduledTime,
                 buildingType,
                 addressCustomer,
+                addressNote,
                 latCustomer,
                 lngCustomer,
-                finalTotalPrice,
-                rincian_biaya.biaya_layanan_app || 0,
-                rincian_biaya.biaya_transaksi || 0,
+                customerData?.phone || null,
+                customerData?.email || null,
+                finalTotalPrice,                           // total_price
+                subtotalAmount,                            // subtotal
+                rincian_biaya.biaya_layanan_app || 0,      // platform_fee
+                serviceFee,                                // service_fee
+                transactionFee,                            // transaction_fee
+                shippingFee,                               // shipping_fee
+                'unpaid',                                  // status
+                'unpaid',                                  // payment_status
                 customerNotes,
                 JSON.stringify(product_items),
                 discountAmount,
-                appliedVoucherId
+                appliedVoucherId,
+                voucher_code || null,
+                'product',                                 // order_type
+                delivery_option || 'instant',              // delivery_option
+                protection ? 1 : 0,                        // protection
+                metode_pembayaran || 'QRIS'                // payment_method
             ]
         );
 
@@ -419,6 +453,7 @@ exports.createOrderWithProducts = async (req, res) => {
             );
         }
 
+        // 🔥 PERBAIKAN: Insert order_items dengan benar
         for (const item of product_items) {
             await connection.execute(
                 `INSERT INTO order_items 
@@ -426,57 +461,28 @@ exports.createOrderWithProducts = async (req, res) => {
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
                     newOrderId,
-                    parseInt(item.id),
-                    item.name,
+                    parseInt(item.id) || null,
+                    item.name || 'Produk',
                     item.variant || 'Default',
-                    item.qty,
-                    item.priceNumber,
-                    item.priceNumber * item.qty,
-                    item.name
+                    item.qty || 1,
+                    item.priceNumber || 0,
+                    (item.priceNumber || 0) * (item.qty || 1),
+                    item.name || 'Produk'
                 ]
             );
         }
         console.log(`${tag} 📦 ${product_items.length} produk tersimpan`);
 
-        try {
-            if (customerData) {
-                const updateFields = [];
-                const updateValues = [];
-
-                if (customerData.name) {
-                    updateFields.push('full_name = ?');
-                    updateValues.push(customerData.name);
-                }
-                if (customerData.phone) {
-                    updateFields.push('phone_number = ?');
-                    updateValues.push(customerData.phone);
-                }
-                if (customerData.email) {
-                    updateFields.push('email = ?');
-                    updateValues.push(customerData.email);
-                }
-
-                if (updateFields.length > 0) {
-                    updateValues.push(customer_id);
-                    await connection.execute(
-                        `UPDATE users SET ${updateFields.join(', ')} WHERE id = ?`,
-                        updateValues
-                    );
-                    console.log(`${tag} ✅ Profil customer diupdate`);
-                }
-            }
-        } catch (updateError) {
-            console.warn(`${tag} ⚠️  Gagal update profil customer:`, updateError.message);
-        }
-
+        // 🔥 PERBAIKAN: Insert payment dengan benar
         await connection.execute(
             `INSERT INTO payments 
              (order_id, customer_id, payment_method, gross_amount, payment_status) 
              VALUES (?, ?, ?, ?, ?)`,
-            [newOrderId, customer_id, metode_pembayaran, finalTotalPrice, 'pending']
+            [newOrderId, customer_id, metode_pembayaran || 'QRIS', finalTotalPrice, 'pending']
         );
         console.log(`${tag} ✅ Payment tersimpan (status: pending)`);
 
+        // 🔥 PERBAIKAN: Insert order_status_logs
         await connection.execute(
             `INSERT INTO order_status_logs (order_id, status, notes) 
              VALUES (?, 'unpaid', 'Pesanan produk dibuat')`,
@@ -484,12 +490,13 @@ exports.createOrderWithProducts = async (req, res) => {
         );
         console.log(`${tag} ✅ Status log tersimpan`);
 
+        // 🔥 PERBAIKAN: Insert proteksi jika ada
         if (protection) {
             try {
                 await connection.execute(
                     `INSERT INTO order_protections (order_id, is_active, protection_fee) 
                      VALUES (?, ?, ?)`,
-                    [newOrderId, 1, rincian_biaya.biaya_proteksi || 0]
+                    [newOrderId, 1, protectionFee || 0]
                 );
                 console.log(`${tag} ✅ Proteksi tersimpan`);
             } catch (protError) {
@@ -500,12 +507,14 @@ exports.createOrderWithProducts = async (req, res) => {
         await connection.commit();
         console.log(`${tag} ✅ Transaksi DB commit berhasil`);
 
+        // Notifikasi admin
         notifyAdmins(
             '🛒 Pesanan Produk Baru!',
             `Order #${newOrderId} - ${product_items.length} produk. Total: Rp${finalTotalPrice.toLocaleString('id-ID')}`,
             newOrderId
         ).catch((e) => console.error(`${tag} ❌ notifyAdmins error:`, e.message));
 
+        // Notifikasi ke toko/mitra
         const [storeData] = await connection.execute(
             'SELECT user_id FROM stores WHERE id = ?',
             [store_id]
@@ -525,7 +534,11 @@ exports.createOrderWithProducts = async (req, res) => {
             order_id: newOrderId,
             order_type: 'product',
             rincian_pembayaran: {
-                subtotal_awal: rincian_biaya.total_akhir,
+                subtotal: subtotalAmount,
+                service_fee: serviceFee,
+                transaction_fee: transactionFee,
+                shipping_fee: shippingFee,
+                protection_fee: protectionFee,
                 potongan_diskon: discountAmount,
                 total_bayar: finalTotalPrice,
                 voucher_code: voucher_code || null,
@@ -556,8 +569,10 @@ exports.getOrderDetail = async (req, res) => {
                 o.*, 
                 u.full_name        AS customer_name, 
                 u.phone_number     AS customer_phone, 
+                u.email            AS customer_email,
                 u.fcm_token        AS customer_fcm,
                 o.address_customer AS address_customer, 
+                o.address_note     AS address_note,
                 m.full_name        AS mitra_name, 
                 m.phone_number     AS mitra_phone,
                 s.store_name,
@@ -566,6 +581,17 @@ exports.getOrderDetail = async (req, res) => {
                 FLOOR((o.total_price + o.discount_amount) * (IFNULL(s.commission_rate, 70) / 100)) AS projected_mitra_earning,
                 (SELECT rating FROM reviews WHERE order_id = o.id LIMIT 1) AS already_rated,
                 o.order_type,
+                o.subtotal,
+                o.platform_fee,
+                o.service_fee,
+                o.transaction_fee,
+                o.shipping_fee,
+                o.discount_amount,
+                o.protection,
+                o.delivery_option,
+                o.payment_method,
+                o.payment_status,
+                o.voucher_code,
                 (SELECT JSON_ARRAYAGG(
                     JSON_OBJECT(
                         'nama', IFNULL(oi.product_name, oi.service_name),
@@ -606,7 +632,6 @@ exports.getOrderDetail = async (req, res) => {
         res.status(500).json({ success: false, message: 'Internal Server Error', error: error.message });
     }
 };
-
 // ============================================================
 // getStoreOrders - Untuk toko melihat pesanan mereka
 // ============================================================
