@@ -17,6 +17,93 @@ const buildItemsSummary = (itemsDetail) => {
     return firstName + (sisa > 0 ? ` dan ${sisa} lainnya` : '');
 };
 
+// ============================================================
+// 🔥 HELPER BARU: Kirim notifikasi "order lunas" ke mitra, customer, admin
+// Dipakai bersama oleh handleCallback (webhook) DAN checkPaymentStatus (polling),
+// supaya perilaku notifikasi konsisten di kedua jalur konfirmasi pembayaran.
+//
+// connection: koneksi DB yang SEDANG AKTIF (dipanggil setelah commit transaksi update status)
+// orderId: id order yang baru saja dikonfirmasi lunas
+// ============================================================
+const notifyOrderPaid = async (connection, orderId) => {
+    const tag = `[notifyOrderPaid][Order#${orderId}]`;
+
+    const [rows] = await connection.execute(
+        `SELECT 
+            o.id AS order_id, o.items, o.total_price, o.order_type, o.customer_id,
+            u.full_name AS customer_name,
+            s.user_id AS mitra_user_id, m.full_name AS mitra_name, s.store_name
+         FROM orders o
+         JOIN users u ON o.customer_id = u.id
+         JOIN stores s ON o.store_id = s.id
+         JOIN users m ON s.user_id = m.id
+         WHERE o.id = ?`,
+        [orderId]
+    );
+
+    if (rows.length === 0) {
+        console.warn(`${tag} ⚠️  Order tidak ditemukan, notifikasi dilewati`);
+        return;
+    }
+
+    const order = rows[0];
+    const itemsDetail = typeof order.items === 'string' ? JSON.parse(order.items) : order.items;
+    const teksItem = buildItemsSummary(itemsDetail);
+    const isProduct = order.order_type === 'product';
+    const jenisPesanan = isProduct ? 'pesanan produk' : 'pesanan jasa';
+
+    // 1. Notifikasi ke Mitra
+    try {
+        await sendToUser(
+            order.mitra_user_id,
+            isProduct ? "Pesanan Produk Baru! 📦" : "Pesanan Baru Masuk! 🔔",
+            `Halo ${order.mitra_name}, ada ${jenisPesanan} ${teksItem} masuk di toko ${order.store_name}.`,
+            {
+                orderId: String(order.order_id),
+                type: "NEW_ORDER",
+                status: "pending",
+                screen: "OrderDetail"
+            }
+        );
+    } catch (fcmErr) {
+        console.error(`${tag} ⚠️  FCM Mitra Error:`, fcmErr.message);
+    }
+
+    // 2. Notifikasi ke Customer
+    try {
+        await sendToUser(
+            order.customer_id,
+            "Pembayaran Berhasil! ✅",
+            `Halo ${order.customer_name}, pembayaran sukses. Menunggu konfirmasi dari ${isProduct ? 'toko' : 'teknisi'}.`,
+            {
+                orderId: String(order.order_id),
+                type: "PAYMENT_SUCCESS",
+                status: "pending",
+                screen: "OrderDetail"
+            }
+        );
+    } catch (fcmErr) {
+        console.error(`${tag} ⚠️  FCM Customer Error:`, fcmErr.message);
+    }
+
+    // 3. Notifikasi ke Admin
+    try {
+        await sendToRole(
+            'admin',
+            "Ada Orderan Baru!",
+            `Order #${order.order_id} sebesar Rp ${parseInt(order.total_price).toLocaleString("id-ID")} telah dibayar oleh ${order.customer_name}.`,
+            {
+                orderId: String(order.order_id),
+                type: "ADMIN_NEW_ORDER",
+                status: "pending",
+                screen: "OrderDetail"
+            }
+        );
+    } catch (adminFcmErr) {
+        console.error(`${tag} ⚠️  FCM Admin Error:`, adminFcmErr.message);
+    }
+};
+
 exports.createPayment = async (req, res) => {
     console.log("==========================================");
     console.log("DEBUG: Incoming Request to /create");
@@ -146,6 +233,19 @@ exports.createPayment = async (req, res) => {
         await connection.commit();
         console.log(`DEBUG: Transaction Committed. Expired set to: ${formattedExpired}`);
 
+        // ============================================================
+        // 🔥 NOTIFIKASI — order masih 'unpaid' di titik ini, jadi HANYA
+        // info ke pelanggan. Notif ke mitra/admin baru dikirim setelah
+        // pembayaran benar-benar lunas (lihat notifyOrderPaid di atas,
+        // dipanggil dari handleCallback / checkPaymentStatus).
+        // ============================================================
+        sendToUser(
+            customer_id,
+            '🧾 Pesanan Dibuat',
+            `Order #${newOrderId} berhasil dibuat. Selesaikan pembayaran untuk melanjutkan.`,
+            { type: 'ORDER_CREATED', orderId: String(newOrderId), screen: 'PaymentInstruction' }
+        ).catch((e) => console.error('[createPayment] ❌ sendToUser (customer) error:', e.message));
+
         res.json({
             success: true,
             order_id: newOrderId,
@@ -169,7 +269,8 @@ exports.createPayment = async (req, res) => {
 
 // ============================================================
 // handleCallback — Webhook dari LinkQu
-// ✅ Diperbaiki: notifikasi pakai sendToUser/sendToRole (user_devices)
+// ✅ Notifikasi (mitra, customer, admin) dikirim lewat notifyOrderPaid,
+//    supaya konsisten dengan checkPaymentStatus (jalur polling).
 //    Berlaku untuk order_type 'service' maupun 'product' (bahan bangunan)
 // ============================================================
 exports.handleCallback = async (req, res) => {
@@ -181,26 +282,15 @@ exports.handleCallback = async (req, res) => {
         if (status === 'SUCCESS' || status === 'SETTLED') {
             await connection.beginTransaction();
 
-            // ✅ Tidak lagi ambil fcm_token dari kolom users, cukup ambil ID
-            //    order_type juga diambil supaya bisa dibedakan jasa vs produk kalau perlu
             const [rows] = await connection.execute(
-                `SELECT 
-                    o.id AS order_id, o.items, o.building_type, o.scheduled_date, 
-                    o.scheduled_time, o.address_customer, o.customer_notes, o.total_price,
-                    o.order_type, o.customer_id,
-                    u.full_name AS customer_name, u.email AS customer_email, u.phone_number,
-                    s.user_id AS mitra_user_id, m.full_name AS mitra_name, s.store_name
+                `SELECT p.order_id
                  FROM payments p
-                 JOIN orders o ON p.order_id = o.id
-                 JOIN users u ON o.customer_id = u.id
-                 JOIN stores s ON o.store_id = s.id
-                 JOIN users m ON s.user_id = m.id
                  WHERE p.transaction_id = ? AND p.payment_status = 'pending'`,
                 [partner_reff]
             );
 
             if (rows.length > 0) {
-                const order = rows[0];
+                const orderId = rows[0].order_id;
 
                 // 1. Update Payment Status
                 await connection.execute(
@@ -211,72 +301,19 @@ exports.handleCallback = async (req, res) => {
                 // 2. Ubah status order ke 'pending' agar muncul di aplikasi Mitra
                 await connection.execute(
                     "UPDATE orders SET status = 'pending' WHERE id = ?",
-                    [order.order_id]
+                    [orderId]
                 );
 
                 await connection.execute(
                     "INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'pending', 'Pembayaran sukses, pesanan diteruskan ke mitra')",
-                    [order.order_id]
+                    [orderId]
                 );
 
                 await connection.commit();
-                console.log(`✅ Order #${order.order_id} is now LIVE for Mitra. (type: ${order.order_type || 'service'})`);
+                console.log(`✅ Order #${orderId} is now LIVE for Mitra (via webhook).`);
 
-                const itemsDetail = typeof order.items === 'string' ? JSON.parse(order.items) : order.items;
-                const teksItem = buildItemsSummary(itemsDetail);
-                const isProduct = order.order_type === 'product';
-                const jenisPesanan = isProduct ? 'pesanan produk' : 'pesanan jasa';
-
-                // 3. Notifikasi ke Mitra — via user_devices (support banyak device)
-                try {
-                    await sendToUser(
-                        order.mitra_user_id,
-                        isProduct ? "Pesanan Produk Baru! 📦" : "Pesanan Baru Masuk! 🔔",
-                        `Halo ${order.mitra_name}, ada ${jenisPesanan} ${teksItem} masuk di toko ${order.store_name}.`,
-                        {
-                            orderId: String(order.order_id),
-                            type: "NEW_ORDER",
-                            status: "pending",
-                            screen: "OrderDetail"
-                        }
-                    );
-                } catch (fcmErr) {
-                    console.error("⚠️ FCM Mitra Error:", fcmErr.message);
-                }
-
-                // 4. Notifikasi ke Customer — via user_devices
-                try {
-                    await sendToUser(
-                        order.customer_id,
-                        "Pembayaran Berhasil! ✅",
-                        `Halo ${order.customer_name}, pembayaran sukses. Menunggu konfirmasi dari ${isProduct ? 'toko' : 'teknisi'}.`,
-                        {
-                            orderId: String(order.order_id),
-                            type: "PAYMENT_SUCCESS",
-                            status: "pending",
-                            screen: "OrderDetail"
-                        }
-                    );
-                } catch (fcmErr) {
-                    console.error("⚠️ FCM Customer Error:", fcmErr.message);
-                }
-
-                // 5. Notifikasi ke Admin — via sendToRole (user_devices, semua admin sekaligus)
-                try {
-                    await sendToRole(
-                        'admin',
-                        "Ada Orderan Baru!",
-                        `Order #${order.order_id} sebesar Rp ${parseInt(order.total_price).toLocaleString("id-ID")} telah dibayar oleh ${order.customer_name}.`,
-                        {
-                            orderId: String(order.order_id),
-                            type: "ADMIN_NEW_ORDER",
-                            status: "pending",
-                            screen: "OrderDetail"
-                        }
-                    );
-                } catch (adminFcmErr) {
-                    console.error("⚠️ FCM Admin Error:", adminFcmErr.message);
-                }
+                // 🔥 Kirim notifikasi terpusat — sama persis dengan jalur checkPaymentStatus
+                await notifyOrderPaid(connection, orderId);
             }
         }
         res.status(200).send("OK");
@@ -451,6 +488,11 @@ exports.checkPaymentStatus = async (req, res) => {
             await connection.execute("UPDATE orders SET status = 'pending' WHERE id = ?", [order_id]);
             await connection.execute("INSERT INTO order_status_logs (order_id, status, notes) VALUES (?, 'pending', 'Pembayaran sukses terverifikasi')", [order_id]);
             await connection.commit();
+
+            // 🔥 PERBAIKAN: sebelumnya jalur ini TIDAK mengirim notifikasi sama sekali.
+            // Kalau webhook telat/gagal dan konfirmasi jatuh ke polling ini, mitra/customer/admin
+            // harus tetap dapat notif — pakai helper yang sama dengan handleCallback.
+            await notifyOrderPaid(connection, order_id);
 
             return res.json({ success: true, status: 'SUCCESS' });
         }

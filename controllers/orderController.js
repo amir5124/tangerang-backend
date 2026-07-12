@@ -2,6 +2,10 @@
 // ============================================================
 // Order Controller — Final Version
 // Fix: double notif admin, logging detail, Expo FCM ready
+// Fix: notifikasi mitra/admin dipindah ke SETELAH pembayaran lunas
+//      (lihat paymentController.js -> notifyOrderPaid), supaya mitra
+//      tidak dapat notif untuk order yang masih unpaid/abandoned.
+// Fix: getOrderDetail sekarang JOIN order_protections -> protection_fee
 // Support: Service & Product Orders
 // ============================================================
 
@@ -144,10 +148,6 @@ const releaseFundsToMitra = async (connection, orderId) => {
 // ============================================================
 // createOrder - Untuk Service (AC, Sedot WC, ART, dll)
 // ============================================================
-// /app/controllers/orderController.js
-// ============================================================
-// createOrder - Untuk Service (AC, Sedot WC, ART, dll)
-// ============================================================
 exports.createOrder = async (req, res) => {
     const {
         customer_id, store_id, metode_pembayaran, jenisGedung,
@@ -266,24 +266,19 @@ exports.createOrder = async (req, res) => {
         await connection.commit();
         console.log(`${tag} ✅ Transaksi DB commit berhasil`);
 
-        notifyAdmins(
-            '🛒 Pesanan Service Baru!',
-            `Order #${newOrderId} - Service dari toko. Total: Rp${finalTotalPrice.toLocaleString('id-ID')}`,
-            newOrderId
-        ).catch((e) => console.error(`${tag} ❌ notifyAdmins error:`, e.message));
-
-        const [storeData] = await connection.execute(
-            'SELECT user_id FROM stores WHERE id = ?',
-            [store_id]
-        );
-        if (storeData.length > 0) {
-            sendToUser(
-                storeData[0].user_id,
-                '📦 Pesanan Service Masuk!',
-                `Ada pesanan service baru #${newOrderId} dari pelanggan. Segera proses!`,
-                { type: 'NEW_ORDER', orderId: String(newOrderId), screen: 'OrderDetail' }
-            ).catch((e) => console.error(`${tag} ❌ sendToUser error:`, e.message));
-        }
+        // ============================================================
+        // 🔥 PERBAIKAN: notif admin & mitra DIHAPUS dari sini.
+        // Order masih 'unpaid' — mitra baru boleh tahu setelah pembayaran
+        // lunas (lihat paymentController.js -> notifyOrderPaid, dipanggil
+        // dari handleCallback / checkPaymentStatus).
+        // Di sini cukup info ke pelanggan saja.
+        // ============================================================
+        sendToUser(
+            customer_id,
+            '🧾 Pesanan Dibuat',
+            `Order #${newOrderId} berhasil dibuat. Selesaikan pembayaran untuk melanjutkan.`,
+            { type: 'ORDER_CREATED', orderId: String(newOrderId), screen: 'PaymentInstruction' }
+        ).catch((e) => console.error(`${tag} ❌ sendToUser (customer) error:`, e.message));
 
         res.status(201).json({
             success: true,
@@ -540,26 +535,17 @@ exports.createOrderWithProducts = async (req, res) => {
         // ============================================================
         // 11. NOTIFIKASI
         // ============================================================
-        // Notifikasi ke admin
-        notifyAdmins(
-            '🛒 Pesanan Produk Baru!',
-            `Order #${newOrderId} - ${product_items.length} produk. Total: Rp${finalTotalPrice.toLocaleString('id-ID')}`,
-            newOrderId
-        ).catch((e) => console.error(`${tag} ❌ notifyAdmins error:`, e.message));
-
-        // Notifikasi ke toko/mitra
-        const [storeData] = await connection.execute(
-            'SELECT user_id FROM stores WHERE id = ?',
-            [store_id]
-        );
-        if (storeData.length > 0) {
-            sendToUser(
-                storeData[0].user_id,
-                '📦 Pesanan Produk Masuk!',
-                `Ada pesanan produk baru #${newOrderId} dari pelanggan. Segera proses!`,
-                { type: 'NEW_ORDER', orderId: String(newOrderId), screen: 'OrderDetail' }
-            ).catch((e) => console.error(`${tag} ❌ sendToUser error:`, e.message));
-        }
+        // 🔥 PERBAIKAN: notif admin & mitra/toko DIHAPUS dari sini.
+        // Order masih 'unpaid' — mitra baru boleh tahu setelah pembayaran
+        // lunas (lihat paymentController.js -> notifyOrderPaid, dipanggil
+        // dari handleCallback / checkPaymentStatus).
+        // Di sini cukup info ke pelanggan saja.
+        sendToUser(
+            customer_id,
+            '🧾 Pesanan Dibuat',
+            `Order #${newOrderId} berhasil dibuat. Selesaikan pembayaran untuk melanjutkan.`,
+            { type: 'ORDER_CREATED', orderId: String(newOrderId), screen: 'PaymentInstruction' }
+        ).catch((e) => console.error(`${tag} ❌ sendToUser (customer) error:`, e.message));
 
         // ============================================================
         // 12. RESPONSE
@@ -595,8 +581,11 @@ exports.createOrderWithProducts = async (req, res) => {
         if (connection) connection.release();
     }
 };
+
 // ============================================================
 // getOrderDetail - Updated untuk support product & service
+// 🔥 PERBAIKAN: JOIN order_protections -> protection_fee ikut terkirim
+//    (dibutuhkan frontend untuk tampilkan rincian proteksi yang akurat)
 // ============================================================
 exports.getOrderDetail = async (req, res) => {
     const { id } = req.params;
@@ -625,6 +614,8 @@ exports.getOrderDetail = async (req, res) => {
                 o.shipping_fee,
                 o.discount_amount,
                 o.protection,
+                op.protection_fee,
+                op.is_active AS protection_is_active,
                 o.delivery_option,
                 o.payment_method,
                 o.payment_status,
@@ -642,6 +633,7 @@ exports.getOrderDetail = async (req, res) => {
             LEFT JOIN users u  ON o.customer_id = u.id 
             LEFT JOIN stores s ON o.store_id    = s.id 
             LEFT JOIN users m  ON s.user_id     = m.id 
+            LEFT JOIN order_protections op ON op.order_id = o.id
             WHERE o.id = ?`;
 
         const [rows] = await db.execute(sql, [id]);
