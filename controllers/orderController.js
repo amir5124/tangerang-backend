@@ -335,6 +335,9 @@ exports.createOrderWithProducts = async (req, res) => {
     try {
         await connection.beginTransaction();
 
+        // ============================================================
+        // 1. VALIDASI VOUCHER
+        // ============================================================
         let discountAmount = 0;
         let appliedVoucherId = null;
 
@@ -369,28 +372,34 @@ exports.createOrderWithProducts = async (req, res) => {
             }
         }
 
-        // 🔥 PERBAIKAN: Hitung ulang total dengan benar
+        // ============================================================
+        // 2. HITUNG RINCIAN BIAYA (TANPA DOUBLE)
+        // ============================================================
         const subtotalAmount = rincian_biaya.subtotal_produk || rincian_biaya.subtotal_layanan || 0;
-        const serviceFee = rincian_biaya.biaya_layanan_app || 0;
+        const biayaLayananApp = rincian_biaya.biaya_layanan_app || 0;  // Ini adalah platform_fee
         const transactionFee = rincian_biaya.biaya_transaksi || 0;
         const shippingFee = rincian_biaya.biaya_pengiriman || 0;
         const protectionFee = rincian_biaya.biaya_proteksi || 0;
 
-        // Total akhir = subtotal + service_fee + transaction_fee + shipping_fee + protection_fee - discount
-        const finalTotalPrice = subtotalAmount + serviceFee + transactionFee + shippingFee + protectionFee - discountAmount;
+        // 🔥 PERBAIKAN: Total = subtotal + biaya_layanan_app + transaction_fee + shipping_fee + protection_fee - discount
+        // TIDAK ADA DOUBLE: platform_fee = biaya_layanan_app, service_fee = 0
+        const finalTotalPrice = subtotalAmount + biayaLayananApp + transactionFee + shippingFee + protectionFee - discountAmount;
 
         console.log(`${tag} 💰 Rincian Biaya:`);
-        console.log(`${tag}    Subtotal        : Rp${subtotalAmount.toLocaleString('id-ID')}`);
-        console.log(`${tag}    Service Fee     : Rp${serviceFee.toLocaleString('id-ID')}`);
-        console.log(`${tag}    Transaction Fee : Rp${transactionFee.toLocaleString('id-ID')}`);
-        console.log(`${tag}    Shipping Fee    : Rp${shippingFee.toLocaleString('id-ID')}`);
-        console.log(`${tag}    Protection Fee  : Rp${protectionFee.toLocaleString('id-ID')}`);
-        console.log(`${tag}    Discount        : -Rp${discountAmount.toLocaleString('id-ID')}`);
-        console.log(`${tag}    Total           : Rp${finalTotalPrice.toLocaleString('id-ID')}`);
+        console.log(`${tag}    Subtotal Produk  : Rp${subtotalAmount.toLocaleString('id-ID')}`);
+        console.log(`${tag}    Biaya Layanan    : Rp${biayaLayananApp.toLocaleString('id-ID')} (platform_fee)`);
+        console.log(`${tag}    Biaya Transaksi  : Rp${transactionFee.toLocaleString('id-ID')}`);
+        console.log(`${tag}    Biaya Pengiriman : Rp${shippingFee.toLocaleString('id-ID')}`);
+        console.log(`${tag}    Biaya Proteksi   : Rp${protectionFee.toLocaleString('id-ID')}`);
+        console.log(`${tag}    Diskon Voucher   : -Rp${discountAmount.toLocaleString('id-ID')}`);
+        console.log(`${tag}    TOTAL AKHIR     : Rp${finalTotalPrice.toLocaleString('id-ID')}`);
 
+        // ============================================================
+        // 3. PREPARE DATA CUSTOMER
+        // ============================================================
         const scheduledDate = customerData?.delivery_date || new Date().toISOString().split('T')[0];
         const scheduledTime = customerData?.delivery_time || '08:00';
-        const buildingType = 'Rumah';
+        const buildingType = customerData?.building_type || 'Rumah';
         const addressCustomer = customerData?.address || '';
         const addressNote = customerData?.address_note || null;
         const latCustomer = customerData?.latitude || null;
@@ -400,7 +409,9 @@ exports.createOrderWithProducts = async (req, res) => {
         console.log(`${tag} 📅 Tanggal: ${scheduledDate}, Waktu: ${scheduledTime}`);
         console.log(`${tag} 📍 Alamat: ${addressCustomer}`);
 
-        // 🔥 PERBAIKAN: INSERT dengan semua kolom yang diperlukan
+        // ============================================================
+        // 4. INSERT ORDER (DENGAN PERBAIKAN DOUBLE FEE)
+        // ============================================================
         const [orderResult] = await connection.execute(
             `INSERT INTO orders 
              (customer_id, store_id, scheduled_date, scheduled_time, building_type, 
@@ -423,38 +434,48 @@ exports.createOrderWithProducts = async (req, res) => {
                 lngCustomer,
                 customerData?.phone || null,
                 customerData?.email || null,
-                finalTotalPrice,                           // total_price
-                subtotalAmount,                            // subtotal
-                rincian_biaya.biaya_layanan_app || 0,      // platform_fee
-                serviceFee,                                // service_fee
-                transactionFee,                            // transaction_fee
-                shippingFee,                               // shipping_fee
-                'unpaid',                                  // status
-                'unpaid',                                  // payment_status
+                finalTotalPrice,                    // total_price
+                subtotalAmount,                     // subtotal
+                biayaLayananApp,                    // platform_fee (biaya layanan app)
+                0,                                  // service_fee (0, TIDAK DOUBLE)
+                transactionFee,                     // transaction_fee
+                shippingFee,                        // shipping_fee
+                'unpaid',                           // status
+                'unpaid',                           // payment_status
                 customerNotes,
                 JSON.stringify(product_items),
                 discountAmount,
                 appliedVoucherId,
                 voucher_code || null,
-                'product',                                 // order_type
-                delivery_option || 'instant',              // delivery_option
-                protection ? 1 : 0,                        // protection
-                metode_pembayaran || 'QRIS'                // payment_method
+                'product',                          // order_type
+                delivery_option || 'instant',       // delivery_option
+                protection ? 1 : 0,                 // protection
+                metode_pembayaran || 'QRIS'         // payment_method
             ]
         );
 
         const newOrderId = orderResult.insertId;
         console.log(`${tag} 📋 Order produk dibuat — ID: ${newOrderId}`);
 
+        // ============================================================
+        // 5. SIMPAN VOUCHER USAGE
+        // ============================================================
         if (appliedVoucherId) {
             await connection.execute(
                 'INSERT INTO voucher_usages (voucher_id, user_id, order_id) VALUES (?, ?, ?)',
                 [appliedVoucherId, customer_id, newOrderId]
             );
+            console.log(`${tag} ✅ Voucher usage tersimpan`);
         }
 
-        // 🔥 PERBAIKAN: Insert order_items dengan benar
+        // ============================================================
+        // 6. INSERT ORDER ITEMS
+        // ============================================================
         for (const item of product_items) {
+            const priceSatuan = item.priceNumber || 0;
+            const qty = item.qty || 1;
+            const subtotalItem = priceSatuan * qty;
+
             await connection.execute(
                 `INSERT INTO order_items 
                  (order_id, product_id, product_name, variant, qty, price_satuan, subtotal, service_name) 
@@ -464,16 +485,18 @@ exports.createOrderWithProducts = async (req, res) => {
                     parseInt(item.id) || null,
                     item.name || 'Produk',
                     item.variant || 'Default',
-                    item.qty || 1,
-                    item.priceNumber || 0,
-                    (item.priceNumber || 0) * (item.qty || 1),
+                    qty,
+                    priceSatuan,
+                    subtotalItem,
                     item.name || 'Produk'
                 ]
             );
         }
         console.log(`${tag} 📦 ${product_items.length} produk tersimpan`);
 
-        // 🔥 PERBAIKAN: Insert payment dengan benar
+        // ============================================================
+        // 7. INSERT PAYMENT
+        // ============================================================
         await connection.execute(
             `INSERT INTO payments 
              (order_id, customer_id, payment_method, gross_amount, payment_status) 
@@ -482,7 +505,9 @@ exports.createOrderWithProducts = async (req, res) => {
         );
         console.log(`${tag} ✅ Payment tersimpan (status: pending)`);
 
-        // 🔥 PERBAIKAN: Insert order_status_logs
+        // ============================================================
+        // 8. INSERT ORDER STATUS LOG
+        // ============================================================
         await connection.execute(
             `INSERT INTO order_status_logs (order_id, status, notes) 
              VALUES (?, 'unpaid', 'Pesanan produk dibuat')`,
@@ -490,7 +515,9 @@ exports.createOrderWithProducts = async (req, res) => {
         );
         console.log(`${tag} ✅ Status log tersimpan`);
 
-        // 🔥 PERBAIKAN: Insert proteksi jika ada
+        // ============================================================
+        // 9. INSERT PROTECTION (JIKA ADA)
+        // ============================================================
         if (protection) {
             try {
                 await connection.execute(
@@ -504,10 +531,16 @@ exports.createOrderWithProducts = async (req, res) => {
             }
         }
 
+        // ============================================================
+        // 10. COMMIT TRANSACTION
+        // ============================================================
         await connection.commit();
         console.log(`${tag} ✅ Transaksi DB commit berhasil`);
 
-        // Notifikasi admin
+        // ============================================================
+        // 11. NOTIFIKASI
+        // ============================================================
+        // Notifikasi ke admin
         notifyAdmins(
             '🛒 Pesanan Produk Baru!',
             `Order #${newOrderId} - ${product_items.length} produk. Total: Rp${finalTotalPrice.toLocaleString('id-ID')}`,
@@ -528,6 +561,9 @@ exports.createOrderWithProducts = async (req, res) => {
             ).catch((e) => console.error(`${tag} ❌ sendToUser error:`, e.message));
         }
 
+        // ============================================================
+        // 12. RESPONSE
+        // ============================================================
         res.status(201).json({
             success: true,
             message: 'Pesanan produk berhasil dibuat',
@@ -535,7 +571,8 @@ exports.createOrderWithProducts = async (req, res) => {
             order_type: 'product',
             rincian_pembayaran: {
                 subtotal: subtotalAmount,
-                service_fee: serviceFee,
+                platform_fee: biayaLayananApp,
+                service_fee: 0, // TIDAK DOUBLE
                 transaction_fee: transactionFee,
                 shipping_fee: shippingFee,
                 protection_fee: protectionFee,
