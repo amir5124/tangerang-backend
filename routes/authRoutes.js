@@ -6,14 +6,14 @@ const upload = require('../middlewares/uploadMiddleware');
 const rateLimit = require('express-rate-limit');
 
 const loginLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, 
-    max: 5, 
+    windowMs: 15 * 60 * 1000,
+    max: 5,
     message: {
         success: false,
         message: "Terlalu banyak percobaan login. Silakan coba lagi setelah 15 menit."
     },
-    standardHeaders: true, 
-    legacyHeaders: false, 
+    standardHeaders: true,
+    legacyHeaders: false,
 });
 
 const resetPasswordLimiter = rateLimit({
@@ -32,6 +32,7 @@ router.get('/profile', authenticateToken, authController.getProfile);
 router.post('/logout', authenticateToken, authController.logout);
 router.put('/update-profile', authenticateToken, upload.single('image'), authController.updateProfile);
 router.put('/change-password', authenticateToken, authController.changePassword);
+router.post('/update-fcm-token', authenticateToken, authController.refreshDeviceToken);
 // 1. Minta link reset (Input Email)
 router.post('/request-reset', resetPasswordLimiter, authController.requestReset);
 // 2. Eksekusi reset password (Input Password Baru + Token dari Email)

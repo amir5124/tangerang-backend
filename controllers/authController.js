@@ -827,7 +827,8 @@ exports.getUserDevices = async (req, res) => {
 // EXTRA: Refresh Device Token (untuk update token tanpa login)
 // ============================================================
 exports.refreshDeviceToken = async (req, res) => {
-    const { user_id, fcm_token } = req.body;
+    const user_id = req.user.id; // ✅ ambil dari token JWT, bukan dari body
+    const { fcm_token } = req.body;
     const tag = `[refreshDeviceToken][UID:${user_id}]`;
 
     console.log(`\n${tag} ========== START REFRESH TOKEN ==========`);
