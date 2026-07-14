@@ -66,6 +66,71 @@ const getReviewSummary = async (req, res) => {
     }
 };
 
+// ─── GET REVIEW SUMMARY (TANPA FILTER is_displayed) ─────────────────────────
+// Menampilkan SEMUA review apa adanya, tanpa menunggu approval admin.
+const getReviewSummaryPublic = async (req, res) => {
+    const { store_id } = req.params;
+    try {
+        // Query 1: Ringkasan rating — tanpa filter is_displayed
+        const [summary] = await db.execute(`
+            SELECT 
+                COUNT(*)                              AS total_reviews,
+                ROUND(AVG(rating), 1)                 AS avg_rating,
+                ROUND(AVG(rating_quality), 1)         AS avg_quality,
+                ROUND(AVG(rating_punctuality), 1)     AS avg_punctuality,
+                ROUND(AVG(rating_communication), 1)   AS avg_communication
+            FROM reviews
+            WHERE store_id = ?
+        `, [store_id]);
+
+        // Query 2: Semua komentar — tanpa filter is_displayed
+        const [comments] = await db.execute(`
+            SELECT
+                r.id                    AS review_id,
+                r.rating,
+                r.rating_quality,
+                r.rating_punctuality,
+                r.rating_communication,
+                r.comment,
+                r.created_at,
+                r.is_displayed,
+                u.full_name,
+                u.profile_picture,
+                o.items                 AS detail_jasa
+            FROM reviews r
+            LEFT JOIN orders o  ON r.order_id  = o.id
+            LEFT JOIN users  u  ON r.customer_id = u.id
+            WHERE r.store_id = ?
+            ORDER BY r.created_at DESC
+            LIMIT 10
+        `, [store_id]);
+
+        const formattedComments = comments.map(item => {
+            let detail_jasa = [];
+            try {
+                if (item.detail_jasa) {
+                    detail_jasa = typeof item.detail_jasa === 'string'
+                        ? JSON.parse(item.detail_jasa)
+                        : item.detail_jasa;
+                }
+            } catch {
+                detail_jasa = [];
+            }
+            return { ...item, detail_jasa };
+        });
+
+        res.status(200).json({
+            success: true,
+            summary: summary[0],
+            latest_comments: formattedComments
+        });
+
+    } catch (error) {
+        console.error('[getReviewSummaryPublic] ❌', error.message);
+        res.status(500).json({ success: false, message: error.message });
+    }
+};
+
 // ─── CREATE REVIEW ───────────────────────────────────────────────────────────
 const createReview = async (req, res) => {
     const {
@@ -407,6 +472,7 @@ const getReviewStatistics = async (req, res) => {
 
 module.exports = {
     getReviewSummary,
+    getReviewSummaryPublic,
     createReview,
     updateReview,
     deleteReview,

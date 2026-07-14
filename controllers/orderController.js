@@ -42,6 +42,51 @@ const notifyAdmins = async (title, body, orderId = null) => {
 };
 
 // ─────────────────────────────────────────────
+// recalcSoldCountForOrder
+// Hitung ulang sold_count untuk semua produk (services) yang ada
+// di dalam satu order, berdasarkan qty dari order_items yang
+// order-nya berstatus working/completed. Dipanggil tiap kali
+// status order berubah, supaya sold_count selalu akurat.
+// ─────────────────────────────────────────────
+const recalcSoldCountForOrder = async (connection, orderId) => {
+    const tag = `[recalcSoldCount][Order#${orderId}]`;
+    try {
+        const [items] = await connection.execute(
+            `SELECT DISTINCT product_id FROM order_items WHERE order_id = ? AND product_id IS NOT NULL`,
+            [orderId]
+        );
+
+        if (items.length === 0) {
+            // Order ini tidak berisi produk (order service), skip.
+            return;
+        }
+
+        for (const { product_id } of items) {
+            const [rows] = await connection.execute(
+                `SELECT COALESCE(SUM(oi.qty), 0) AS total_qty
+                 FROM order_items oi
+                 JOIN orders o ON oi.order_id = o.id
+                 WHERE oi.product_id = ?
+                   AND o.order_type = 'product'
+                   AND o.status IN ('working', 'completed')`,
+                [product_id]
+            );
+
+            const totalQty = rows[0]?.total_qty || 0;
+
+            await connection.execute(
+                `UPDATE services SET sold_count = ? WHERE id = ?`,
+                [totalQty, product_id]
+            );
+
+            console.log(`${tag} 🔢 product_id=${product_id} → sold_count=${totalQty}`);
+        }
+    } catch (error) {
+        console.error(`${tag} ❌ Gagal recalculate sold_count:`, error.message);
+    }
+};
+
+// ─────────────────────────────────────────────
 // releaseFundsToMitra
 // ⚠️  TIDAK memanggil notifyAdmins di sini
 //     supaya tidak double dengan caller-nya
@@ -747,6 +792,8 @@ exports.updateOrderStatusByStore = async (req, res) => {
             [id, status, notes || `Status diupdate ke ${status} oleh toko`]
         );
 
+        await recalcSoldCountForOrder(connection, id);
+
         await connection.commit();
 
         // Notifikasi ke customer
@@ -979,6 +1026,8 @@ exports.updateOrderStatus = async (req, res) => {
             [id, statusToSave, logNotes]
         );
 
+        await recalcSoldCountForOrder(connection, id);
+
         await connection.commit();
         console.log(`${tag} ✅ DB commit — status tersimpan: "${statusToSave}"`);
 
@@ -1075,6 +1124,8 @@ exports.customerCompleteOrder = async (req, res) => {
              WHERE id = ?`,
             [store_id, store_id, store_id]
         );
+
+        await recalcSoldCountForOrder(connection, id);
 
         let releaseResult = null;
 

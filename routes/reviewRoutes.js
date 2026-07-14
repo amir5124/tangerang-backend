@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const {
     getReviewSummary,
+    getReviewSummaryPublic,
     createReview,
     updateReview,
     deleteReview,
@@ -32,6 +33,8 @@ router.get('/latest-all', getAllLatestReviews);
 
 // GET    /api/reviews/store/:store_id   → Ringkasan + komentar terbaru toko (hanya yang ditampilkan)
 router.get('/store/:store_id', getReviewSummary);
+router.get('/store/:store_id/all', getReviewSummaryPublic);
+
 
 // GET    /api/reviews/:review_id        → Detail satu review
 router.get('/:review_id', getReviewById);

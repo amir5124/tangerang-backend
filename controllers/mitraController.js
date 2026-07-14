@@ -254,26 +254,27 @@ exports.getAllProducts = async (req, res) => {
     const { category } = req.query;
 
     let query = `
-        SELECT 
-            sv.id,
-            sv.store_id,
-            sv.service_name AS name,
-            sv.price_type,
-            sv.base_price,
-            sv.description,
-            sv.image_url,
-            s.store_name,
-            s.category,
-            s.latitude,
-            s.longitude,
-            s.average_rating,
-            s.total_reviews,
-            s.is_verified,
-            s.operating_hours
-        FROM services sv
-        JOIN stores s ON sv.store_id = s.id
-        WHERE sv.is_active = 1 AND s.is_active = 1
-    `;
+    SELECT 
+        sv.id,
+        sv.store_id,
+        sv.service_name AS name,
+        sv.price_type,
+        sv.base_price,
+        sv.description,
+        sv.image_url,
+        sv.sold_count,
+        s.store_name,
+        s.category,
+        s.latitude,
+        s.longitude,
+        s.average_rating,
+        s.total_reviews,
+        s.is_verified,
+        s.operating_hours
+    FROM services sv
+    JOIN stores s ON sv.store_id = s.id
+    WHERE sv.is_active = 1 AND s.is_active = 1
+`;
 
     const params = [];
     if (category) {
@@ -301,6 +302,7 @@ exports.getProductDetail = async (req, res) => {
             SELECT 
                 sv.id, sv.store_id, sv.service_name AS name,
                 sv.price_type, sv.base_price, sv.description, sv.image_url,
+                sv.sold_count,
                 s.store_name, s.category, s.latitude, s.longitude,
                 s.average_rating, s.total_reviews, s.is_verified
             FROM services sv
@@ -314,8 +316,6 @@ exports.getProductDetail = async (req, res) => {
 
         const product = rows[0];
 
-        // ✅ Ambil review asli milik TOKO (bukan produk spesifik),
-        //    hanya yang is_displayed = 1, terbaru duluan, maksimal 10
         const [reviews] = await db.query(`
             SELECT 
                 r.id, r.rating, r.rating_quality, r.rating_punctuality,
@@ -333,7 +333,6 @@ exports.getProductDetail = async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 };
-
 // ─────────────────────────────────────────────────────────────
 // deleteMitra
 // ─────────────────────────────────────────────────────────────
