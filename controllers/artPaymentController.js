@@ -123,7 +123,6 @@ const createArtPayment = async (req, res) => {
         const isQRIS = metode_pembayaran === 'QRIS';
         const partner_reff = helpers.generatePartnerReff();
 
-        // Expired presisi
         const duration = isQRIS ? 30 : 1440;
         const expiredMoment = moment().tz('Asia/Jakarta').add(duration, 'minutes');
         const expired = expiredMoment.format('YYYYMMDDHHmmss');
@@ -131,7 +130,6 @@ const createArtPayment = async (req, res) => {
 
         const finalEmail = helpers.isValidEmail(cust_email) ? cust_email : process.env.DEFAULT_EMAIL;
 
-        // Request ke LinkQu
         const payload = {
             amount: total,
             partner_reff: partner_reff,
@@ -151,7 +149,7 @@ const createArtPayment = async (req, res) => {
             throw new Error(linkquRes.data?.message || "Gagal mendapatkan respon dari LinkQu");
         }
 
-        // ✅ SATU QUERY UPDATE - Gabungkan semua kolom
+        // ✅ SATU QUERY UPDATE - tanpa art_order_logs
         await connection.execute(
             `UPDATE pesanan 
              SET 
@@ -175,19 +173,6 @@ const createArtPayment = async (req, res) => {
                 pesanan_id
             ]
         );
-
-        // 🔥 OPTIONAL: Insert ke art_order_logs (jika tabelnya ada)
-        // Tapi lebih baik pakai try-catch agar tidak error jika tabel belum ada
-        try {
-            await connection.execute(
-                `INSERT INTO art_order_logs (pesanan_id, status, notes) 
-                 VALUES (?, 'pending', 'Pembayaran dibuat, menunggu konfirmasi')`,
-                [pesanan_id]
-            );
-        } catch (logErr) {
-            // Abaikan error jika tabel art_order_logs belum ada
-            console.warn('⚠️ art_order_logs table not found, skipping log:', logErr.message);
-        }
 
         await connection.commit();
         console.log(`✅ [ART Payment] Pesanan #${pesanan_id} berhasil dibuat, reff: ${partner_reff}`);
@@ -216,6 +201,7 @@ const createArtPayment = async (req, res) => {
         connection.release();
     }
 };
+
 // ============================================================
 // WEBHOOK CALLBACK untuk ART Payment
 // ============================================================
@@ -236,27 +222,20 @@ const handleArtCallback = async (req, res) => {
             if (rows.length > 0) {
                 const pesananId = rows[0].id;
 
-                // Update status payment
+                // ✅ Update status - tanpa art_order_logs
                 await connection.execute(
                     `UPDATE pesanan 
                      SET pay_status = 'settlement', 
                          status = 'paid',
+                         matching_status = 'matching',
                          pay_at = NOW() 
                      WHERE pay_id = ?`,
                     [partner_reff]
                 );
 
-                // Log
-                await connection.execute(
-                    `INSERT INTO art_order_logs (pesanan_id, status, notes) 
-                     VALUES (?, 'paid', 'Pembayaran sukses via webhook')`,
-                    [pesananId]
-                );
-
                 await connection.commit();
                 console.log(`✅ [ART Webhook] Pesanan #${pesananId} lunas.`);
 
-                // 🔥 Kirim notifikasi sukses
                 await notifyArtOrderPaid(connection, pesananId);
             }
         }
@@ -279,7 +258,7 @@ const checkArtPaymentStatus = async (req, res) => {
 
     try {
         const [rows] = await connection.execute(
-            `SELECT id, pay_status, expired_at, status 
+            `SELECT id, pay_status, expired_at, status, matching_status
              FROM pesanan 
              WHERE pay_id = ?`,
             [partnerReff]
@@ -292,18 +271,13 @@ const checkArtPaymentStatus = async (req, res) => {
             });
         }
 
-        const { id: pesananId, pay_status, expired_at, status } = rows[0];
+        const { id: pesananId, pay_status, expired_at, status, matching_status } = rows[0];
 
         // Cek expired
         if (pay_status === 'pending' && new Date() > new Date(expired_at)) {
             await connection.beginTransaction();
             await connection.execute(
-                `UPDATE pesanan SET pay_status = 'expire', status = 'cancelled' WHERE id = ?`,
-                [pesananId]
-            );
-            await connection.execute(
-                `INSERT INTO art_order_logs (pesanan_id, status, notes) 
-                 VALUES (?, 'cancelled', 'Expired otomatis saat pengecekan')`,
+                `UPDATE pesanan SET pay_status = 'expire', status = 'cancelled', matching_status = 'cancelled' WHERE id = ?`,
                 [pesananId]
             );
             await connection.commit();
@@ -317,17 +291,11 @@ const checkArtPaymentStatus = async (req, res) => {
         if (linkquStatus === 'SUCCESS' || linkquStatus === 'SETTLED') {
             await connection.beginTransaction();
             await connection.execute(
-                `UPDATE pesanan SET pay_status = 'settlement', status = 'paid', pay_at = NOW() WHERE id = ?`,
-                [pesananId]
-            );
-            await connection.execute(
-                `INSERT INTO art_order_logs (pesanan_id, status, notes) 
-                 VALUES (?, 'paid', 'Pembayaran sukses via polling')`,
+                `UPDATE pesanan SET pay_status = 'settlement', status = 'paid', matching_status = 'matching', pay_at = NOW() WHERE id = ?`,
                 [pesananId]
             );
             await connection.commit();
 
-            // 🔥 Kirim notifikasi sukses
             await notifyArtOrderPaid(connection, pesananId);
 
             return res.json({ success: true, status: 'SUCCESS' });
@@ -352,7 +320,7 @@ const checkArtPaymentStatus = async (req, res) => {
 };
 
 // ============================================================
-// ✅ EXPORT MODULE - PASTIKAN FORMATNYA BENAR
+// EXPORT MODULE
 // ============================================================
 module.exports = {
     createArtPayment,
