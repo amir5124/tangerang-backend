@@ -107,6 +107,7 @@ exports.getAllHistory = async (req, res) => {
                 u.full_name AS customer_name, 
                 (SELECT service_name FROM order_items WHERE order_id = o.id LIMIT 1) AS service_name, 
                 o.total_price, 
+                o.discount_amount,
                 o.status, 
                 o.proof_image_url,
                 o.scheduled_date, 
@@ -114,9 +115,12 @@ exports.getAllHistory = async (req, res) => {
                 o.items,
                 o.updated_at,
                 o.order_date AS created_at,
-                CASE WHEN o.items IS NOT NULL THEN JSON_LENGTH(o.items) ELSE 1 END AS total_items
+                CASE WHEN o.items IS NOT NULL THEN JSON_LENGTH(o.items) ELSE 1 END AS total_items,
+                IFNULL(s.commission_rate, 70) AS commission_rate,
+                FLOOR((o.total_price + IFNULL(o.discount_amount, 0)) * (IFNULL(s.commission_rate, 70) / 100)) AS mitra_earning
             FROM orders o
             JOIN users u ON o.customer_id = u.id
+            JOIN stores s ON o.store_id = s.id
             WHERE o.store_id = ? 
             ORDER BY o.order_date DESC 
             LIMIT ?
@@ -130,7 +134,6 @@ exports.getAllHistory = async (req, res) => {
         return res.status(500).json({ success: false, message: error.message });
     }
 };
-
 // ─────────────────────────────────────────────────────────────
 // getStoreProfile
 // ─────────────────────────────────────────────────────────────
