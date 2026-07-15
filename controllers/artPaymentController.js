@@ -6,7 +6,7 @@ const { sendToUser, sendToRole } = require('../services/notificationService');
 const moment = require('moment-timezone');
 
 // ============================================================
-// HELPER: Notifikasi ke admin & pekerja
+// HELPER: Notifikasi ke admin & customer & pekerja
 // ============================================================
 const notifyArtOrderPaid = async (connection, pesananId) => {
     const tag = `[notifyArtOrderPaid][Pesanan#${pesananId}]`;
@@ -24,7 +24,8 @@ const notifyArtOrderPaid = async (connection, pesananId) => {
             p.tgl,
             p.jam,
             p.alamat,
-            p.catatan
+            p.catatan,
+            p.created_at
          FROM pesanan p
          WHERE p.id = ?`,
         [pesananId]
@@ -36,19 +37,22 @@ const notifyArtOrderPaid = async (connection, pesananId) => {
     }
 
     const pesanan = rows[0];
+    const totalFormatted = parseInt(pesanan.total).toLocaleString('id-ID');
 
     // 1. Notifikasi ke Admin
     try {
         await sendToRole(
             'admin',
             '🧹 Pesanan ART/Babysitter Baru!',
-            `Pesanan #${pesanan.order_id} dari ${pesanan.cust_nama} (${pesanan.cust_hp}) untuk ${pesanan.worker_nama} sebesar Rp${parseInt(pesanan.total).toLocaleString('id-ID')}`,
+            `Pesanan #${pesanan.order_id} dari ${pesanan.cust_nama} (${pesanan.cust_hp}) untuk ${pesanan.worker_nama} sebesar Rp${totalFormatted}`,
             {
                 orderId: String(pesanan.order_id),
                 type: 'ADMIN_ART_ORDER',
-                screen: 'ArtOrderDetail'
+                screen: 'ArtOrderDetail',
+                pesanan_id: String(pesananId)
             }
         );
+        console.log(`${tag} ✅ Notif Admin terkirim`);
     } catch (err) {
         console.error(`${tag} ❌ Notif Admin error:`, err.message);
     }
@@ -58,18 +62,20 @@ const notifyArtOrderPaid = async (connection, pesananId) => {
         await sendToUser(
             pesanan.cust_id,
             '✅ Pembayaran Berhasil!',
-            `Halo ${pesanan.cust_nama}, pembayaran untuk pesanan ART/Babysitter #${pesanan.order_id} telah berhasil. Tim kami akan segera memproses.`,
+            `Halo ${pesanan.cust_nama}, pembayaran untuk pesanan ART/Babysitter #${pesanan.order_id} telah berhasil. Tim kami akan segera memproses pencocokan kandidat.`,
             {
                 orderId: String(pesanan.order_id),
                 type: 'ART_PAYMENT_SUCCESS',
-                screen: 'ArtOrderDetail'
+                screen: 'ArtMatching',
+                pesanan_id: String(pesananId)
             }
         );
+        console.log(`${tag} ✅ Notif Customer terkirim ke ${pesanan.cust_id}`);
     } catch (err) {
         console.error(`${tag} ❌ Notif Customer error:`, err.message);
     }
 
-    // 3. Notifikasi ke Pekerja (jika ada)
+    // 3. Notifikasi ke Pekerja (jika ada worker_id)
     if (pesanan.worker_id) {
         try {
             await sendToUser(
@@ -79,12 +85,36 @@ const notifyArtOrderPaid = async (connection, pesananId) => {
                 {
                     orderId: String(pesanan.order_id),
                     type: 'ART_NEW_JOB',
-                    screen: 'ArtJobDetail'
+                    screen: 'ArtJobDetail',
+                    pesanan_id: String(pesananId)
                 }
             );
+            console.log(`${tag} ✅ Notif Pekerja terkirim ke ${pesanan.worker_id}`);
         } catch (err) {
             console.error(`${tag} ❌ Notif Pekerja error:`, err.message);
         }
+    }
+};
+
+// ============================================================
+// HELPER: Notifikasi saat pesanan dibuat (sebelum bayar)
+// ============================================================
+const notifyArtOrderCreated = async (cust_id, pesananId, orderId) => {
+    try {
+        await sendToUser(
+            cust_id,
+            '🧾 Pesanan ART Dibuat',
+            `Pesanan #${orderId} berhasil dibuat. Selesaikan pembayaran untuk melanjutkan proses matching.`,
+            {
+                orderId: String(orderId),
+                type: 'ART_ORDER_CREATED',
+                screen: 'PaymentInstruction',
+                pesanan_id: String(pesananId)
+            }
+        );
+        console.log(`[notifyArtOrderCreated] ✅ Notif ke customer ${cust_id} terkirim`);
+    } catch (err) {
+        console.error('[notifyArtOrderCreated] ❌ Error:', err.message);
     }
 };
 
@@ -149,7 +179,14 @@ const createArtPayment = async (req, res) => {
             throw new Error(linkquRes.data?.message || "Gagal mendapatkan respon dari LinkQu");
         }
 
-        // ✅ SATU QUERY UPDATE - tanpa art_order_logs
+        // Ambil order_id dari tabel pesanan
+        const [orderData] = await connection.execute(
+            `SELECT order_id FROM pesanan WHERE id = ?`,
+            [pesanan_id]
+        );
+        const orderId = orderData[0]?.order_id || `ART-${pesanan_id}`;
+
+        // ✅ UPDATE pesanan
         await connection.execute(
             `UPDATE pesanan 
              SET 
@@ -177,11 +214,15 @@ const createArtPayment = async (req, res) => {
         await connection.commit();
         console.log(`✅ [ART Payment] Pesanan #${pesanan_id} berhasil dibuat, reff: ${partner_reff}`);
 
+        // 🔥 Kirim notifikasi ke customer bahwa pesanan dibuat (belum bayar)
+        await notifyArtOrderCreated(cust_id, pesanan_id, orderId);
+
         res.json({
             success: true,
             message: 'Pembayaran ART berhasil dibuat',
             data: {
                 pesanan_id: pesanan_id,
+                order_id: orderId,
                 va_number: linkquRes.data.virtual_account || null,
                 qris_url: linkquRes.data.imageqris || null,
                 expired_at: formattedExpired,
@@ -222,7 +263,7 @@ const handleArtCallback = async (req, res) => {
             if (rows.length > 0) {
                 const pesananId = rows[0].id;
 
-                // ✅ Update status - tanpa art_order_logs
+                // ✅ Update status
                 await connection.execute(
                     `UPDATE pesanan 
                      SET pay_status = 'settlement', 
@@ -236,7 +277,17 @@ const handleArtCallback = async (req, res) => {
                 await connection.commit();
                 console.log(`✅ [ART Webhook] Pesanan #${pesananId} lunas.`);
 
+                // 🔥 Kirim notifikasi ke admin, customer, pekerja
                 await notifyArtOrderPaid(connection, pesananId);
+
+                // 🔥 Update response biar frontend tahu ini sukses
+                res.status(200).json({
+                    success: true,
+                    message: 'Payment confirmed',
+                    pesanan_id: pesananId,
+                    status: 'SUCCESS'
+                });
+                return;
             }
         }
         res.status(200).send("OK");
@@ -296,9 +347,14 @@ const checkArtPaymentStatus = async (req, res) => {
             );
             await connection.commit();
 
+            // 🔥 Kirim notifikasi
             await notifyArtOrderPaid(connection, pesananId);
 
-            return res.json({ success: true, status: 'SUCCESS' });
+            return res.json({
+                success: true,
+                status: 'SUCCESS',
+                pesanan_id: pesananId
+            });
         }
 
         res.json({
@@ -326,5 +382,6 @@ module.exports = {
     createArtPayment,
     handleArtCallback,
     checkArtPaymentStatus,
-    notifyArtOrderPaid
+    notifyArtOrderPaid,
+    notifyArtOrderCreated
 };
