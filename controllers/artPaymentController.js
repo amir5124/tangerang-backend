@@ -91,7 +91,7 @@ const notifyArtOrderPaid = async (connection, pesananId) => {
 // ============================================================
 // CREATE PAYMENT untuk ART/Babysitter
 // ============================================================
-exports.createArtPayment = async (req, res) => {
+const createArtPayment = async (req, res) => {
     console.log("==========================================");
     console.log("🧹 [ART Payment] Incoming Request");
     console.log("Timestamp:", new Date().toISOString());
@@ -185,10 +185,6 @@ exports.createArtPayment = async (req, res) => {
         await connection.commit();
         console.log(`✅ [ART Payment] Pesanan #${pesanan_id} berhasil dibuat, reff: ${partner_reff}`);
 
-        // Notifikasi ke admin & pekerja (hanya info order dibuat)
-        // TAPI belum dikirim notif pembayaran berhasil karena status masih pending
-        // Notif sukses baru dikirim setelah webhook/polling
-
         res.json({
             success: true,
             message: 'Pembayaran ART berhasil dibuat',
@@ -217,7 +213,7 @@ exports.createArtPayment = async (req, res) => {
 // ============================================================
 // WEBHOOK CALLBACK untuk ART Payment
 // ============================================================
-exports.handleArtCallback = async (req, res) => {
+const handleArtCallback = async (req, res) => {
     const connection = await db.getConnection();
     try {
         const { partner_reff, status, amount } = req.body;
@@ -271,7 +267,7 @@ exports.handleArtCallback = async (req, res) => {
 // ============================================================
 // CHECK PAYMENT STATUS untuk ART
 // ============================================================
-exports.checkArtPaymentStatus = async (req, res) => {
+const checkArtPaymentStatus = async (req, res) => {
     const { partnerReff } = req.params;
     const connection = await db.getConnection();
 
@@ -349,6 +345,9 @@ exports.checkArtPaymentStatus = async (req, res) => {
     }
 };
 
+// ============================================================
+// ✅ EXPORT MODULE - PASTIKAN FORMATNYA BENAR
+// ============================================================
 module.exports = {
     createArtPayment,
     handleArtCallback,
