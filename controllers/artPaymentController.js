@@ -151,7 +151,7 @@ const createArtPayment = async (req, res) => {
             throw new Error(linkquRes.data?.message || "Gagal mendapatkan respon dari LinkQu");
         }
 
-        // Update status payment di tabel pesanan
+        // ✅ SATU QUERY UPDATE - Gabungkan semua kolom
         await connection.execute(
             `UPDATE pesanan 
              SET 
@@ -162,7 +162,8 @@ const createArtPayment = async (req, res) => {
                 pay_status = 'pending',
                 pay_data = ?,
                 expired_at = ?,
-                status = 'pending'
+                status = 'pending',
+                matching_status = 'pending'
              WHERE id = ?`,
             [
                 metode_pembayaran,
@@ -175,12 +176,18 @@ const createArtPayment = async (req, res) => {
             ]
         );
 
-        // Log status
-        await connection.execute(
-            `INSERT INTO art_order_logs (pesanan_id, status, notes) 
-             VALUES (?, 'pending', 'Pembayaran dibuat, menunggu konfirmasi')`,
-            [pesanan_id]
-        );
+        // 🔥 OPTIONAL: Insert ke art_order_logs (jika tabelnya ada)
+        // Tapi lebih baik pakai try-catch agar tidak error jika tabel belum ada
+        try {
+            await connection.execute(
+                `INSERT INTO art_order_logs (pesanan_id, status, notes) 
+                 VALUES (?, 'pending', 'Pembayaran dibuat, menunggu konfirmasi')`,
+                [pesanan_id]
+            );
+        } catch (logErr) {
+            // Abaikan error jika tabel art_order_logs belum ada
+            console.warn('⚠️ art_order_logs table not found, skipping log:', logErr.message);
+        }
 
         await connection.commit();
         console.log(`✅ [ART Payment] Pesanan #${pesanan_id} berhasil dibuat, reff: ${partner_reff}`);
@@ -209,7 +216,6 @@ const createArtPayment = async (req, res) => {
         connection.release();
     }
 };
-
 // ============================================================
 // WEBHOOK CALLBACK untuk ART Payment
 // ============================================================
