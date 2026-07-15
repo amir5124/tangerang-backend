@@ -48,80 +48,62 @@ const notifyArtOrderPaid = async (connection, pesananId) => {
 
         const totalFormatted = parseInt(pesanan.total).toLocaleString('id-ID');
 
-        // ============================================================
         // 1. Notifikasi ke Admin
-        // ============================================================
         console.log(`${tag} 📤 [1/3] Mengirim notifikasi ke ADMIN...`);
         try {
-            const adminPayload = {
-                orderId: String(pesanan.order_id),
-                type: 'ADMIN_ART_ORDER',
-                screen: 'ArtOrderDetail',
-                pesanan_id: String(pesananId)
-            };
-            console.log(`${tag}    Payload:`, JSON.stringify(adminPayload, null, 2));
-
             await sendToRole(
                 'admin',
                 '🧹 Pesanan ART/Babysitter Baru!',
                 `Pesanan #${pesanan.order_id} dari ${pesanan.cust_nama} (${pesanan.cust_hp}) untuk ${pesanan.worker_nama || 'kandidat'} sebesar Rp${totalFormatted}`,
-                adminPayload
+                {
+                    orderId: String(pesanan.order_id),
+                    type: 'ADMIN_ART_ORDER',
+                    screen: 'ArtOrderDetail',
+                    pesanan_id: String(pesananId)
+                }
             );
             console.log(`${tag} ✅ [1/3] Notif Admin BERHASIL terkirim`);
         } catch (err) {
             console.error(`${tag} ❌ [1/3] Notif Admin GAGAL:`, err.message);
-            console.error(`${tag}    Stack:`, err.stack);
         }
 
-        // ============================================================
         // 2. Notifikasi ke Customer
-        // ============================================================
         console.log(`${tag} 📤 [2/3] Mengirim notifikasi ke CUSTOMER (UID: ${pesanan.cust_id})...`);
         try {
-            const customerPayload = {
-                orderId: String(pesanan.order_id),
-                type: 'ART_PAYMENT_SUCCESS',
-                screen: 'ArtMatching',
-                pesanan_id: String(pesananId)
-            };
-            console.log(`${tag}    Payload:`, JSON.stringify(customerPayload, null, 2));
-
             await sendToUser(
                 pesanan.cust_id,
                 '✅ Pembayaran Berhasil!',
                 `Halo ${pesanan.cust_nama}, pembayaran untuk pesanan ART/Babysitter #${pesanan.order_id} telah berhasil. Tim kami akan segera memproses pencocokan kandidat.`,
-                customerPayload
+                {
+                    orderId: String(pesanan.order_id),
+                    type: 'ART_PAYMENT_SUCCESS',
+                    screen: 'ArtMatching',
+                    pesanan_id: String(pesananId)
+                }
             );
             console.log(`${tag} ✅ [2/3] Notif Customer BERHASIL terkirim ke ${pesanan.cust_id}`);
         } catch (err) {
             console.error(`${tag} ❌ [2/3] Notif Customer GAGAL:`, err.message);
-            console.error(`${tag}    Stack:`, err.stack);
         }
 
-        // ============================================================
         // 3. Notifikasi ke Pekerja (jika ada)
-        // ============================================================
         if (pesanan.worker_id) {
             console.log(`${tag} 📤 [3/3] Mengirim notifikasi ke PEKERJA (UID: ${pesanan.worker_id})...`);
             try {
-                const workerPayload = {
-                    orderId: String(pesanan.order_id),
-                    type: 'ART_NEW_JOB',
-                    screen: 'ArtJobDetail',
-                    pesanan_id: String(pesananId)
-                };
-                console.log(`${tag}    Payload:`, JSON.stringify(workerPayload, null, 2));
-
                 await sendToUser(
                     pesanan.worker_id,
                     '📋 Pesanan Baru untuk Anda!',
                     `Halo ${pesanan.worker_nama}, ada pesanan baru dari ${pesanan.cust_nama} pada ${pesanan.tgl} pukul ${pesanan.jam}.`,
-                    workerPayload
+                    {
+                        orderId: String(pesanan.order_id),
+                        type: 'ART_NEW_JOB',
+                        screen: 'ArtJobDetail',
+                        pesanan_id: String(pesananId)
+                    }
                 );
                 console.log(`${tag} ✅ [3/3] Notif Pekerja BERHASIL terkirim ke ${pesanan.worker_id}`);
             } catch (err) {
                 console.error(`${tag} ❌ [3/3] Notif Pekerja GAGAL:`, err.message);
-                console.error(`${tag}    Stack:`, err.stack);
             }
         } else {
             console.log(`${tag} ℹ️ [3/3] Tidak ada worker_id, skip notif pekerja`);
@@ -129,8 +111,7 @@ const notifyArtOrderPaid = async (connection, pesananId) => {
 
         console.log(`${tag} 🎉 ===== PROSES NOTIFIKASI SELESAI =====`);
     } catch (err) {
-        console.error(`${tag} ❌❌❌ ERROR FATAL DI notifyArtOrderPaid:`, err.message);
-        console.error(`${tag}    Stack:`, err.stack);
+        console.error(`${tag} ❌❌❌ ERROR FATAL:`, err.message);
     }
 };
 
@@ -140,24 +121,20 @@ const notifyArtOrderPaid = async (connection, pesananId) => {
 const notifyArtOrderCreated = async (cust_id, pesananId, orderId) => {
     console.log(`[notifyArtOrderCreated] 📤 Mengirim notif order dibuat ke customer ${cust_id}...`);
     try {
-        const payload = {
-            orderId: String(orderId),
-            type: 'ART_ORDER_CREATED',
-            screen: 'PaymentInstruction',
-            pesanan_id: String(pesananId)
-        };
-        console.log(`[notifyArtOrderCreated]    Payload:`, JSON.stringify(payload, null, 2));
-
         await sendToUser(
             cust_id,
             '🧾 Pesanan ART Dibuat',
             `Pesanan #${orderId} berhasil dibuat. Selesaikan pembayaran untuk melanjutkan proses matching.`,
-            payload
+            {
+                orderId: String(orderId),
+                type: 'ART_ORDER_CREATED',
+                screen: 'PaymentInstruction',
+                pesanan_id: String(pesananId)
+            }
         );
         console.log(`[notifyArtOrderCreated] ✅ Notif ke customer ${cust_id} BERHASIL terkirim`);
     } catch (err) {
         console.error('[notifyArtOrderCreated] ❌ Error:', err.message);
-        console.error('[notifyArtOrderCreated]    Stack:', err.stack);
     }
 };
 
@@ -186,14 +163,6 @@ const createArtPayment = async (req, res) => {
             worker_nama
         } = req.body;
 
-        console.log(`📥 Request body:`);
-        console.log(`   pesanan_id        : ${pesanan_id}`);
-        console.log(`   metode_pembayaran : ${metode_pembayaran}`);
-        console.log(`   total             : ${total}`);
-        console.log(`   cust_id           : ${cust_id}`);
-        console.log(`   cust_nama         : ${cust_nama}`);
-        console.log(`   worker_id         : ${worker_id}`);
-
         if (!pesanan_id || !metode_pembayaran || !total) {
             return res.status(400).json({
                 success: false,
@@ -203,13 +172,11 @@ const createArtPayment = async (req, res) => {
 
         const isQRIS = metode_pembayaran === 'QRIS';
         const partner_reff = helpers.generatePartnerReff();
-        console.log(`🔑 Partner Reff: ${partner_reff}`);
 
         const duration = isQRIS ? 30 : 1440;
         const expiredMoment = moment().tz('Asia/Jakarta').add(duration, 'minutes');
         const expired = expiredMoment.format('YYYYMMDDHHmmss');
         const formattedExpired = expiredMoment.format('YYYY-MM-DD HH:mm:ss');
-        console.log(`⏰ Expired: ${formattedExpired}`);
 
         const finalEmail = helpers.isValidEmail(cust_email) ? cust_email : process.env.DEFAULT_EMAIL;
 
@@ -223,7 +190,6 @@ const createArtPayment = async (req, res) => {
             customer_id: cust_id,
             wa: cust_hp
         };
-        console.log(`📤 Payload ke LinkQu:`, JSON.stringify(payload, null, 2));
 
         const linkquRes = isQRIS ?
             await linkqu.createQRIS(payload) :
@@ -232,7 +198,6 @@ const createArtPayment = async (req, res) => {
         if (!linkquRes.data || linkquRes.data.status !== 'SUCCESS') {
             throw new Error(linkquRes.data?.message || "Gagal mendapatkan respon dari LinkQu");
         }
-        console.log(`✅ LinkQu response: SUCCESS`);
 
         // Ambil order_id dari tabel pesanan
         const [orderData] = await connection.execute(
@@ -240,10 +205,8 @@ const createArtPayment = async (req, res) => {
             [pesanan_id]
         );
         const orderId = orderData[0]?.order_id || `ART-${pesanan_id}`;
-        console.log(`📋 Order ID: ${orderId}`);
 
-        // ✅ UPDATE pesanan
-        console.log(`📝 Updating pesanan #${pesanan_id}...`);
+        // UPDATE pesanan
         await connection.execute(
             `UPDATE pesanan 
              SET 
@@ -267,12 +230,11 @@ const createArtPayment = async (req, res) => {
                 pesanan_id
             ]
         );
-        console.log(`✅ Pesanan #${pesanan_id} updated`);
 
         await connection.commit();
         console.log(`✅ [ART Payment] Pesanan #${pesanan_id} berhasil dibuat, reff: ${partner_reff}`);
 
-        // 🔥 Kirim notifikasi ke customer bahwa pesanan dibuat (belum bayar)
+        // Kirim notifikasi ke customer bahwa pesanan dibuat (belum bayar)
         await notifyArtOrderCreated(cust_id, pesanan_id, orderId);
 
         res.json({
@@ -292,7 +254,6 @@ const createArtPayment = async (req, res) => {
     } catch (err) {
         if (connection) await connection.rollback();
         console.error("❌ [ART Payment] Error:", err.message);
-        console.error("❌ Stack:", err.stack);
         res.status(500).json({
             success: false,
             message: err.message || "Internal Server Error"
@@ -303,17 +264,36 @@ const createArtPayment = async (req, res) => {
 };
 
 // ============================================================
-// WEBHOOK CALLBACK untuk ART Payment
+// WEBHOOK CALLBACK untuk ART Payment - FIX AUTO REDIRECT
 // ============================================================
 const handleArtCallback = async (req, res) => {
     const connection = await db.getConnection();
     console.log(`📩 [ART Webhook] ===== WEBHOOK RECEIVED =====`);
+    console.log(`📩 [ART Webhook] Body:`, JSON.stringify(req.body, null, 2));
 
     try {
-        const { partner_reff, status, amount } = req.body;
-        console.log(`📩 [ART Webhook] Reff #${partner_reff} | Status: ${status} | Amount: ${amount}`);
+        const body = req.body;
 
-        if (status === 'SUCCESS' || status === 'SETTLED') {
+        // 🔥 SUPPORT MULTIPLE PAYLOAD FORMAT
+        let partner_reff = body.partner_reff || body.reference_id || body.order_id || body.reference || body.transaction_id;
+        let status = body.status || body.transaction_status || body.payment_status || body.response_desc;
+        let amount = body.amount || body.gross_amount || body.total || body.amount_paid;
+
+        console.log(`📩 [ART Webhook] Extracted - Reff: ${partner_reff}, Status: ${status}, Amount: ${amount}`);
+
+        if (!partner_reff) {
+            console.log(`⚠️ [ART Webhook] No partner_reff found, available keys:`, Object.keys(body));
+            return res.status(400).json({ success: false, message: "Missing partner_reff" });
+        }
+
+        // 🔥 NORMALIZE STATUS
+        const normalizedStatus = String(status).toUpperCase();
+        console.log(`📩 [ART Webhook] Normalized Status: ${normalizedStatus}`);
+
+        // 🔥 CEK SEMUA KEMUNGKINAN STATUS SUKSES
+        const isSuccess = ['SUCCESS', 'SETTLED', 'SETTLEMENT', 'PAID', 'COMPLETED', 'DONE'].includes(normalizedStatus);
+
+        if (isSuccess) {
             console.log(`✅ [ART Webhook] Status SUCCESS, memproses...`);
             await connection.beginTransaction();
 
@@ -329,7 +309,19 @@ const handleArtCallback = async (req, res) => {
                 const pesananId = rows[0].id;
                 console.log(`✅ [ART Webhook] Pesanan ditemukan, ID: ${pesananId}, pay_status: ${rows[0].pay_status}`);
 
-                // ✅ Update status
+                // 🔥 CEK APAKAH SUDAH PERNAH DIUPDATE
+                if (rows[0].pay_status === 'settlement') {
+                    console.log(`ℹ️ [ART Webhook] Pesanan #${pesananId} sudah settlement, skip update`);
+                    await connection.commit();
+                    return res.status(200).json({
+                        success: true,
+                        message: 'Already processed',
+                        pesanan_id: pesananId,
+                        status: 'SUCCESS'
+                    });
+                }
+
+                // Update status
                 console.log(`📝 [ART Webhook] Updating pesanan #${pesananId}...`);
                 await connection.execute(
                     `UPDATE pesanan 
@@ -345,30 +337,24 @@ const handleArtCallback = async (req, res) => {
                 await connection.commit();
                 console.log(`✅ [ART Webhook] Pesanan #${pesananId} lunas. COMMIT success`);
 
-                // 🔥 Kirim notifikasi ke admin, customer, pekerja
-                console.log(`📣 [ART Webhook] Memanggil notifyArtOrderPaid untuk pesanan #${pesananId}...`);
+                // Kirim notifikasi
+                console.log(`📣 [ART Webhook] Memanggil notifyArtOrderPaid...`);
                 await notifyArtOrderPaid(connection, pesananId);
                 console.log(`✅ [ART Webhook] notifyArtOrderPaid selesai`);
 
-                // 🔥 Update response biar frontend tahu ini sukses
-                console.log(`📤 [ART Webhook] Sending success response...`);
-                res.status(200).json({
+                return res.status(200).json({
                     success: true,
                     message: 'Payment confirmed',
                     pesanan_id: pesananId,
                     status: 'SUCCESS'
                 });
-                console.log(`✅ [ART Webhook] Response sent`);
-                return;
             } else {
                 console.log(`⚠️ [ART Webhook] Tidak ada pesanan dengan pay_id: ${partner_reff}`);
-                console.log(`⚠️ [ART Webhook] Cek apakah pay_id di database sudah sesuai`);
             }
         } else {
-            console.log(`ℹ️ [ART Webhook] Status bukan SUCCESS/SETTLED: ${status}, skip processing`);
+            console.log(`ℹ️ [ART Webhook] Status bukan SUCCESS: ${normalizedStatus}, skip processing`);
         }
 
-        console.log(`📤 [ART Webhook] Sending OK response`);
         res.status(200).send("OK");
     } catch (err) {
         if (connection) await connection.rollback();
@@ -382,7 +368,7 @@ const handleArtCallback = async (req, res) => {
 };
 
 // ============================================================
-// CHECK PAYMENT STATUS untuk ART
+// CHECK PAYMENT STATUS untuk ART - FIX AUTO REDIRECT
 // ============================================================
 const checkArtPaymentStatus = async (req, res) => {
     const { partnerReff } = req.params;
@@ -409,6 +395,19 @@ const checkArtPaymentStatus = async (req, res) => {
         const { id: pesananId, pay_status, expired_at, status, matching_status } = rows[0];
         console.log(`📊 [ART CheckPayment] Status: pay_status=${pay_status}, status=${status}, matching_status=${matching_status}`);
 
+        // 🔥 CEK APAKAH SUDAH SETTLEMENT - LANGSUNG RETURN SUCCESS
+        if (pay_status === 'settlement' || pay_status === 'SUCCESS' || status === 'paid') {
+            console.log(`✅ [ART CheckPayment] Payment already SUCCESS, returning SUCCESS`);
+            return res.json({
+                success: true,
+                status: 'SUCCESS',
+                pesanan_id: pesananId,
+                pay_status: pay_status,
+                status_order: status,
+                matching_status: matching_status
+            });
+        }
+
         // Cek expired
         if (pay_status === 'pending' && new Date() > new Date(expired_at)) {
             console.log(`⏰ [ART CheckPayment] Transaksi EXPIRED: ${partnerReff}`);
@@ -421,38 +420,56 @@ const checkArtPaymentStatus = async (req, res) => {
             return res.json({ success: true, status: 'EXPIRED' });
         }
 
-        // Cek ke LinkQu
-        console.log(`🔍 [ART CheckPayment] Checking with LinkQu...`);
-        const linkquResult = await linkqu.checkStatus(partnerReff);
-        const linkquStatus = linkquResult?.status || linkquResult?.data?.status;
-        console.log(`📊 [ART CheckPayment] LinkQu status: ${linkquStatus}`);
+        // 🔥 CEK KE LINKQU HANYA JIKA MASIH PENDING
+        if (pay_status === 'pending') {
+            console.log(`🔍 [ART CheckPayment] Calling linkqu.checkStatus('${partnerReff}')...`);
+            let linkquResult;
+            try {
+                linkquResult = await linkqu.checkStatus(partnerReff);
+                console.log(`📊 [ART CheckPayment] LinkQu result:`, JSON.stringify(linkquResult, null, 2));
+            } catch (linkquErr) {
+                console.error(`❌ [ART CheckPayment] LinkQu error:`, linkquErr.message);
+                linkquResult = { status: 'ERROR' };
+            }
 
-        if (linkquStatus === 'SUCCESS' || linkquStatus === 'SETTLED') {
-            console.log(`✅ [ART CheckPayment] Payment SUCCESS, updating...`);
-            await connection.beginTransaction();
-            await connection.execute(
-                `UPDATE pesanan SET pay_status = 'settlement', status = 'paid', matching_status = 'matching', pay_at = NOW() WHERE id = ?`,
-                [pesananId]
+            // 🔥 CEK BERBAGAI FORMAT STATUS
+            const linkquStatus = linkquResult?.status ||
+                linkquResult?.data?.status ||
+                linkquResult?.response_desc ||
+                linkquResult?.transaction_status ||
+                null;
+
+            console.log(`📊 [ART CheckPayment] Extracted LinkQu status: ${linkquStatus}`);
+
+            const isSuccess = ['SUCCESS', 'SETTLED', 'SETTLEMENT', 'PAID', 'COMPLETED', 'DONE'].includes(
+                String(linkquStatus).toUpperCase()
             );
-            await connection.commit();
-            console.log(`✅ [ART CheckPayment] Pesanan #${pesananId} updated`);
 
-            // 🔥 Kirim notifikasi
-            console.log(`📣 [ART CheckPayment] Memanggil notifyArtOrderPaid...`);
-            await notifyArtOrderPaid(connection, pesananId);
-            console.log(`✅ [ART CheckPayment] notifyArtOrderPaid selesai`);
+            if (isSuccess) {
+                console.log(`✅ [ART CheckPayment] Payment SUCCESS from LinkQu, updating...`);
+                await connection.beginTransaction();
+                await connection.execute(
+                    `UPDATE pesanan SET pay_status = 'settlement', status = 'paid', matching_status = 'matching', pay_at = NOW() WHERE id = ?`,
+                    [pesananId]
+                );
+                await connection.commit();
+                console.log(`✅ [ART CheckPayment] Pesanan #${pesananId} updated`);
 
-            return res.json({
-                success: true,
-                status: 'SUCCESS',
-                pesanan_id: pesananId
-            });
+                await notifyArtOrderPaid(connection, pesananId);
+
+                return res.json({
+                    success: true,
+                    status: 'SUCCESS',
+                    pesanan_id: pesananId
+                });
+            }
         }
 
+        // Default: return status dari database
         res.json({
             success: true,
             status: pay_status.toUpperCase(),
-            data: linkquResult
+            data: { pay_status, status, matching_status }
         });
 
     } catch (err) {
@@ -469,7 +486,7 @@ const checkArtPaymentStatus = async (req, res) => {
 };
 
 // ============================================================
-// GET PESANAN BY ID (untuk frontend polling matching)
+// GET PESANAN BY ID
 // ============================================================
 const getPesananById = async (req, res) => {
     const { id } = req.params;
@@ -536,7 +553,6 @@ const updateMatchingStatus = async (req, res) => {
 
         const currentStatus = rows[0].status;
 
-        // Hanya bisa update matching_status jika status sudah 'paid'
         if (currentStatus !== 'paid' && currentStatus !== 'pending') {
             return res.status(400).json({
                 success: false,
