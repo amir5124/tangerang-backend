@@ -1,5 +1,5 @@
 // controllers/artController.js
-const db = require('../config/database'); // Sesuaikan dengan konfigurasi DB lo
+const db = require('../config/db'); // Sesuaikan dengan konfigurasi DB lo
 
 // ============================================================
 // GET: Semua pesanan
