@@ -316,6 +316,8 @@ exports.getProductDetail = async (req, res) => {
 
         const product = rows[0];
 
+        // 🔥 PUBLIC — tanpa filter is_displayed, konsisten dengan total_reviews
+        // yang juga dihitung tanpa filter di customerCompleteOrder
         const [reviews] = await db.query(`
             SELECT 
                 r.id, r.rating, r.rating_quality, r.rating_punctuality,
@@ -323,7 +325,7 @@ exports.getProductDetail = async (req, res) => {
                 u.full_name AS customer_name
             FROM reviews r
             JOIN users u ON r.customer_id = u.id
-            WHERE r.store_id = ? AND r.is_displayed = 1
+            WHERE r.store_id = ?
             ORDER BY r.created_at DESC
             LIMIT 10
         `, [product.store_id]);
