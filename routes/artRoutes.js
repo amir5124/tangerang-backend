@@ -9,6 +9,10 @@ const artController = require('../controllers/artController');
 
 // GET: Semua pesanan
 router.get('/', artController.getAllPesanan);
+// routes/artRoutes.js
+router.get('/active/:cust_id', artController.getActivePesananByCustomer);
+router.get('/matching-status/:matching_status', artController.getPesananByMatchingStatus);
+router.put('/:id/matching', artController.updateMatchingStatus);
 
 // GET: Statistik pesanan
 router.get('/statistik', artController.getStatistikPesanan);

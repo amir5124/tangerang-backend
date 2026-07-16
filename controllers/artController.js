@@ -1,5 +1,5 @@
 // controllers/artController.js
-const db = require('../config/db'); // Sesuaikan dengan konfigurasi DB lo
+const db = require('../config/db');
 
 // ============================================================
 // GET: Semua pesanan
@@ -58,6 +58,7 @@ const getAllPesanan = async (req, res) => {
                 voc_type,
                 voc_valid,
                 status,
+                matching_status,
                 created_at,
                 updated_at
             FROM pesanan
@@ -114,7 +115,7 @@ const getPesananById = async (req, res) => {
 };
 
 // ============================================================
-// GET: Pesanan by Customer
+// GET: Pesanan by Customer (SEMUA pesanan customer)
 // ============================================================
 const getPesananByCustomer = async (req, res) => {
     try {
@@ -137,6 +138,37 @@ const getPesananByCustomer = async (req, res) => {
         res.status(500).json({
             success: false,
             message: 'Gagal mengambil data pesanan customer',
+            error: error.message
+        });
+    }
+};
+
+// ============================================================
+// GET: Pesanan Aktif by Customer (hanya yang status aktif)
+// ============================================================
+const getActivePesananByCustomer = async (req, res) => {
+    try {
+        const { cust_id } = req.params;
+
+        const [rows] = await db.query(`
+            SELECT * FROM pesanan 
+            WHERE cust_id = ? 
+            AND status IN ('pending', 'paid', 'matching')
+            AND matching_status IN ('pending', 'matching')
+            ORDER BY created_at DESC
+        `, [cust_id]);
+
+        res.json({
+            success: true,
+            message: 'Data pesanan aktif customer berhasil diambil',
+            data: rows,
+            total: rows.length
+        });
+    } catch (error) {
+        console.error('Error getActivePesananByCustomer:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Gagal mengambil data pesanan aktif customer',
             error: error.message
         });
     }
@@ -201,6 +233,35 @@ const getPesananByStatus = async (req, res) => {
 };
 
 // ============================================================
+// GET: Pesanan by Matching Status
+// ============================================================
+const getPesananByMatchingStatus = async (req, res) => {
+    try {
+        const { matching_status } = req.params;
+
+        const [rows] = await db.query(`
+            SELECT * FROM pesanan 
+            WHERE matching_status = ? 
+            ORDER BY created_at DESC
+        `, [matching_status]);
+
+        res.json({
+            success: true,
+            message: `Data pesanan dengan matching_status ${matching_status} berhasil diambil`,
+            data: rows,
+            total: rows.length
+        });
+    } catch (error) {
+        console.error('Error getPesananByMatchingStatus:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Gagal mengambil data pesanan',
+            error: error.message
+        });
+    }
+};
+
+// ============================================================
 // POST: Buat pesanan baru
 // ============================================================
 const createPesanan = async (req, res) => {
@@ -247,7 +308,8 @@ const createPesanan = async (req, res) => {
             total,
             pay_method,
             pay_status,
-            status
+            status,
+            matching_status
         } = req.body;
 
         // Generate order_id jika tidak ada
@@ -296,8 +358,9 @@ const createPesanan = async (req, res) => {
                 total,
                 pay_method,
                 pay_status,
-                status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                status,
+                matching_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `, [
             finalOrderId,
             cust_id,
@@ -340,7 +403,8 @@ const createPesanan = async (req, res) => {
             total || 0,
             pay_method,
             pay_status || 'unpaid',
-            status || 'pending'
+            status || 'pending',
+            matching_status || 'pending'
         ]);
 
         const [newOrder] = await db.query(`
@@ -370,7 +434,6 @@ const updatePesanan = async (req, res) => {
         const { id } = req.params;
         const updateData = req.body;
 
-        // Cek apakah pesanan ada
         const [existing] = await db.query(`
             SELECT * FROM pesanan WHERE id = ? OR order_id = ?
         `, [id, id]);
@@ -382,12 +445,11 @@ const updatePesanan = async (req, res) => {
             });
         }
 
-        // Build query dinamis
         const fields = [];
         const values = [];
 
         Object.keys(updateData).forEach(key => {
-            if (key !== 'id' && key !== 'order_id' && key !== 'created_at') {
+            if (key !== 'id' && key !== 'order_id' && key !== 'created_at' && key !== 'updated_at') {
                 fields.push(`${key} = ?`);
                 values.push(updateData[key]);
             }
@@ -433,11 +495,11 @@ const updateStatusPesanan = async (req, res) => {
         const { id } = req.params;
         const { status } = req.body;
 
-        const validStatus = ['pending', 'paid', 'completed', 'cancelled'];
+        const validStatus = ['pending', 'paid', 'matching', 'approved', 'rejected', 'completed', 'cancelled'];
         if (!validStatus.includes(status)) {
             return res.status(400).json({
                 success: false,
-                message: 'Status tidak valid. Gunakan: pending, paid, completed, cancelled'
+                message: 'Status tidak valid. Gunakan: pending, paid, matching, approved, rejected, completed, cancelled'
             });
         }
 
@@ -463,6 +525,13 @@ const updateStatusPesanan = async (req, res) => {
             `, [existing[0].id]);
         }
 
+        // Jika status approved atau rejected, update matching_status
+        if (status === 'approved' || status === 'rejected') {
+            await db.query(`
+                UPDATE pesanan SET matching_status = ? WHERE id = ?
+            `, [status, existing[0].id]);
+        }
+
         const [updated] = await db.query(`
             SELECT * FROM pesanan WHERE id = ?
         `, [existing[0].id]);
@@ -477,6 +546,66 @@ const updateStatusPesanan = async (req, res) => {
         res.status(500).json({
             success: false,
             message: 'Gagal mengupdate status pesanan',
+            error: error.message
+        });
+    }
+};
+
+// ============================================================
+// PUT: Update matching status
+// ============================================================
+const updateMatchingStatus = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { matching_status } = req.body;
+
+        const validStatus = ['pending', 'matching', 'approved', 'rejected'];
+        if (!validStatus.includes(matching_status)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Matching status tidak valid. Gunakan: pending, matching, approved, rejected'
+            });
+        }
+
+        const [existing] = await db.query(`
+            SELECT * FROM pesanan WHERE id = ? OR order_id = ?
+        `, [id, id]);
+
+        if (existing.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Pesanan tidak ditemukan'
+            });
+        }
+
+        // Jika matching_status approved atau rejected, update status utama juga
+        let statusUpdate = '';
+        if (matching_status === 'approved') {
+            statusUpdate = ', status = "approved"';
+        } else if (matching_status === 'rejected') {
+            statusUpdate = ', status = "rejected"';
+        }
+
+        await db.query(`
+            UPDATE pesanan 
+            SET matching_status = ? ${statusUpdate}
+            WHERE id = ?
+        `, [matching_status, existing[0].id]);
+
+        const [updated] = await db.query(`
+            SELECT * FROM pesanan WHERE id = ?
+        `, [existing[0].id]);
+
+        res.json({
+            success: true,
+            message: `Matching status berhasil diupdate menjadi ${matching_status}`,
+            data: updated[0]
+        });
+    } catch (error) {
+        console.error('Error updateMatchingStatus:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Gagal mengupdate matching status',
             error: error.message
         });
     }
@@ -524,7 +653,6 @@ const deletePesanan = async (req, res) => {
 // ============================================================
 const getStatistikPesanan = async (req, res) => {
     try {
-        // Total pesanan per status
         const [statusStats] = await db.query(`
             SELECT 
                 status,
@@ -533,50 +661,54 @@ const getStatistikPesanan = async (req, res) => {
             GROUP BY status
         `);
 
-        // Total pendapatan
+        const [matchingStats] = await db.query(`
+            SELECT 
+                matching_status,
+                COUNT(*) AS total
+            FROM pesanan
+            GROUP BY matching_status
+        `);
+
         const [revenue] = await db.query(`
             SELECT 
                 SUM(total) AS total_pendapatan,
                 COUNT(*) AS total_pesanan_selesai,
                 AVG(total) AS rata_rata
             FROM pesanan
-            WHERE status IN ('paid', 'completed')
+            WHERE status IN ('paid', 'completed', 'approved')
         `);
 
-        // Top 5 pekerja terlaris
         const [topWorkers] = await db.query(`
             SELECT 
                 worker_nama,
                 COUNT(*) AS total_pesanan,
                 SUM(total) AS total_pendapatan
             FROM pesanan
-            WHERE status IN ('paid', 'completed')
+            WHERE status IN ('paid', 'completed', 'approved')
             GROUP BY worker_nama
             ORDER BY total_pendapatan DESC
             LIMIT 5
         `);
 
-        // Top 5 customer
         const [topCustomers] = await db.query(`
             SELECT 
                 cust_nama,
                 COUNT(*) AS total_pesanan,
                 SUM(total) AS total_belanja
             FROM pesanan
-            WHERE status IN ('paid', 'completed')
+            WHERE status IN ('paid', 'completed', 'approved')
             GROUP BY cust_nama
             ORDER BY total_belanja DESC
             LIMIT 5
         `);
 
-        // Metode pembayaran favorit
         const [paymentMethods] = await db.query(`
             SELECT 
                 metode_bayar,
                 COUNT(*) AS total_transaksi,
                 SUM(total) AS total_nominal
             FROM pesanan
-            WHERE status IN ('paid', 'completed')
+            WHERE status IN ('paid', 'completed', 'approved')
             GROUP BY metode_bayar
             ORDER BY total_transaksi DESC
         `);
@@ -586,6 +718,7 @@ const getStatistikPesanan = async (req, res) => {
             message: 'Statistik pesanan berhasil diambil',
             data: {
                 status_stats: statusStats,
+                matching_stats: matchingStats,
                 revenue: revenue[0] || { total_pendapatan: 0, total_pesanan_selesai: 0, rata_rata: 0 },
                 top_workers: topWorkers,
                 top_customers: topCustomers,
@@ -625,7 +758,7 @@ const getLaporanPerTanggal = async (req, res) => {
                 COUNT(DISTINCT cust_id) AS pelanggan_unik
             FROM pesanan
             WHERE tgl BETWEEN ? AND ?
-            AND status IN ('paid', 'completed')
+            AND status IN ('paid', 'completed', 'approved')
             GROUP BY DATE(tgl)
             ORDER BY tanggal DESC
         `, [start_date, end_date]);
@@ -653,11 +786,14 @@ module.exports = {
     getAllPesanan,
     getPesananById,
     getPesananByCustomer,
+    getActivePesananByCustomer,
     getPesananByWorker,
     getPesananByStatus,
+    getPesananByMatchingStatus,
     createPesanan,
     updatePesanan,
     updateStatusPesanan,
+    updateMatchingStatus,
     deletePesanan,
     getStatistikPesanan,
     getLaporanPerTanggal
