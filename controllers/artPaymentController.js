@@ -264,7 +264,7 @@ const createArtPayment = async (req, res) => {
 };
 
 // ============================================================
-// WEBHOOK CALLBACK untuk ART Payment - FIX AUTO REDIRECT
+// WEBHOOK CALLBACK untuk ART Payment - FINAL FIX
 // ============================================================
 const handleArtCallback = async (req, res) => {
     const connection = await db.getConnection();
@@ -290,8 +290,8 @@ const handleArtCallback = async (req, res) => {
         const normalizedStatus = String(status).toUpperCase();
         console.log(`📩 [ART Webhook] Normalized Status: ${normalizedStatus}`);
 
-        // 🔥 CEK SEMUA KEMUNGKINAN STATUS SUKSES
-        const isSuccess = ['SUCCESS', 'SETTLED', 'SETTLEMENT', 'PAID', 'COMPLETED', 'DONE'].includes(normalizedStatus);
+        // 🔥 CEK SEMUA KEMUNGKINAN STATUS SUKSES (termasuk APPROVE/SUCCESS)
+        const isSuccess = ['SUCCESS', 'SETTLED', 'SETTLEMENT', 'PAID', 'COMPLETED', 'DONE', 'APPROVE/SUCCESS'].includes(normalizedStatus);
 
         if (isSuccess) {
             console.log(`✅ [ART Webhook] Status SUCCESS, memproses...`);
@@ -350,6 +350,7 @@ const handleArtCallback = async (req, res) => {
                 });
             } else {
                 console.log(`⚠️ [ART Webhook] Tidak ada pesanan dengan pay_id: ${partner_reff}`);
+                console.log(`⚠️ [ART Webhook] Cek apakah pay_id di database sudah sesuai`);
             }
         } else {
             console.log(`ℹ️ [ART Webhook] Status bukan SUCCESS: ${normalizedStatus}, skip processing`);
@@ -368,7 +369,7 @@ const handleArtCallback = async (req, res) => {
 };
 
 // ============================================================
-// CHECK PAYMENT STATUS untuk ART - FIX AUTO REDIRECT
+// CHECK PAYMENT STATUS untuk ART - FINAL FIX
 // ============================================================
 const checkArtPaymentStatus = async (req, res) => {
     const { partnerReff } = req.params;
@@ -393,7 +394,7 @@ const checkArtPaymentStatus = async (req, res) => {
         }
 
         const { id: pesananId, pay_status, expired_at, status, matching_status } = rows[0];
-        console.log(`📊 [ART CheckPayment] Status: pay_status=${pay_status}, status=${status}, matching_status=${matching_status}`);
+        console.log(`📊 [ART CheckPayment] Status DB: pay_status=${pay_status}, status=${status}, matching_status=${matching_status}`);
 
         // 🔥 CEK APAKAH SUDAH SETTLEMENT - LANGSUNG RETURN SUCCESS
         if (pay_status === 'settlement' || pay_status === 'SUCCESS' || status === 'paid') {
@@ -401,10 +402,7 @@ const checkArtPaymentStatus = async (req, res) => {
             return res.json({
                 success: true,
                 status: 'SUCCESS',
-                pesanan_id: pesananId,
-                pay_status: pay_status,
-                status_order: status,
-                matching_status: matching_status
+                pesanan_id: pesananId
             });
         }
 
@@ -426,24 +424,37 @@ const checkArtPaymentStatus = async (req, res) => {
             let linkquResult;
             try {
                 linkquResult = await linkqu.checkStatus(partnerReff);
-                console.log(`📊 [ART CheckPayment] LinkQu result:`, JSON.stringify(linkquResult, null, 2));
+                console.log(`📊 [ART CheckPayment] LinkQu result received`);
             } catch (linkquErr) {
                 console.error(`❌ [ART CheckPayment] LinkQu error:`, linkquErr.message);
                 linkquResult = { status: 'ERROR' };
             }
 
-            // 🔥 CEK BERBAGAI FORMAT STATUS
-            const linkquStatus = linkquResult?.status ||
-                linkquResult?.data?.status ||
-                linkquResult?.response_desc ||
-                linkquResult?.transaction_status ||
+            // 🔥 FIX: CEK SEMUA KEMUNGKINAN FIELD STATUS DARI LINKQU
+            const linkquData = linkquResult?.data || linkquResult || {};
+
+            // 🔥 PRIORITAS FIELD STATUS DARI LINKQU
+            const linkquStatus =
+                linkquData?.status_trx ||           // ← "success"
+                linkquData?.status_desc ||          // ← "APPROVE/SUCCESS"  
+                linkquData?.status_paid ||          // ← "paid"
+                linkquData?.status ||               // ← fallback
+                linkquResult?.status ||             // ← fallback
+                linkquResult?.response_desc ||      // ← fallback
                 null;
 
             console.log(`📊 [ART CheckPayment] Extracted LinkQu status: ${linkquStatus}`);
 
-            const isSuccess = ['SUCCESS', 'SETTLED', 'SETTLEMENT', 'PAID', 'COMPLETED', 'DONE'].includes(
-                String(linkquStatus).toUpperCase()
-            );
+            // 🔥 CEK APAKAH STATUS MENUNJUKKAN SUKSES
+            const statusStr = String(linkquStatus).toUpperCase();
+            const isSuccess =
+                statusStr.includes('SUCCESS') ||
+                statusStr.includes('APPROVE') ||
+                statusStr === 'PAID' ||
+                statusStr === 'SETTLED' ||
+                statusStr === 'SETTLEMENT' ||
+                statusStr === 'COMPLETED' ||
+                statusStr === 'DONE';
 
             if (isSuccess) {
                 console.log(`✅ [ART CheckPayment] Payment SUCCESS from LinkQu, updating...`);
