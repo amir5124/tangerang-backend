@@ -495,11 +495,12 @@ const updateStatusPesanan = async (req, res) => {
         const { id } = req.params;
         const { status } = req.body;
 
-        const validStatus = ['pending', 'paid', 'matching', 'approved', 'rejected', 'completed', 'cancelled'];
+        // ✅ Tambahkan 'calling' dan 'working' ke validasi
+        const validStatus = ['pending', 'paid', 'matching', 'calling', 'working', 'approved', 'rejected', 'completed', 'cancelled'];
         if (!validStatus.includes(status)) {
             return res.status(400).json({
                 success: false,
-                message: 'Status tidak valid. Gunakan: pending, paid, matching, approved, rejected, completed, cancelled'
+                message: 'Status tidak valid. Gunakan: pending, paid, matching, calling, working, approved, rejected, completed, cancelled'
             });
         }
 
@@ -523,6 +524,13 @@ const updateStatusPesanan = async (req, res) => {
             await db.query(`
                 UPDATE pesanan SET pay_status = 'paid', pay_at = NOW() WHERE id = ?
             `, [existing[0].id]);
+        }
+
+        // Update matching_status berdasarkan status
+        if (status === 'calling' || status === 'working') {
+            await db.query(`
+                UPDATE pesanan SET matching_status = ? WHERE id = ?
+            `, [status, existing[0].id]);
         }
 
         // Jika status approved atau rejected, update matching_status
@@ -559,11 +567,12 @@ const updateMatchingStatus = async (req, res) => {
         const { id } = req.params;
         const { matching_status } = req.body;
 
-        const validStatus = ['pending', 'matching', 'approved', 'rejected'];
+        // ✅ Tambahkan 'calling' dan 'working' ke validasi matching status
+        const validStatus = ['pending', 'matching', 'calling', 'working', 'approved', 'rejected'];
         if (!validStatus.includes(matching_status)) {
             return res.status(400).json({
                 success: false,
-                message: 'Matching status tidak valid. Gunakan: pending, matching, approved, rejected'
+                message: 'Matching status tidak valid. Gunakan: pending, matching, calling, working, approved, rejected'
             });
         }
 
@@ -578,12 +587,16 @@ const updateMatchingStatus = async (req, res) => {
             });
         }
 
-        // Jika matching_status approved atau rejected, update status utama juga
+        // Update status utama berdasarkan matching_status
         let statusUpdate = '';
         if (matching_status === 'approved') {
             statusUpdate = ', status = "approved"';
         } else if (matching_status === 'rejected') {
             statusUpdate = ', status = "rejected"';
+        } else if (matching_status === 'calling') {
+            statusUpdate = ', status = "calling"';
+        } else if (matching_status === 'working') {
+            statusUpdate = ', status = "working"';
         }
 
         await db.query(`
