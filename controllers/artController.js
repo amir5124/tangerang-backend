@@ -490,12 +490,17 @@ const updatePesanan = async (req, res) => {
 // ============================================================
 // PUT: Update status pesanan
 // ============================================================
+// controllers/artController.js
+
+// ============================================================
+// PUT: Update status pesanan - dengan handling lock timeout
+// ============================================================
 const updateStatusPesanan = async (req, res) => {
     try {
         const { id } = req.params;
         const { status } = req.body;
 
-        // ✅ Tambahkan 'calling' dan 'working' ke validasi
+        // ✅ Validasi status
         const validStatus = ['pending', 'paid', 'matching', 'calling', 'working', 'approved', 'rejected', 'completed', 'cancelled'];
         if (!validStatus.includes(status)) {
             return res.status(400).json({
@@ -504,9 +509,11 @@ const updateStatusPesanan = async (req, res) => {
             });
         }
 
-        const [existing] = await db.query(`
-            SELECT * FROM pesanan WHERE id = ? OR order_id = ?
-        `, [id, id]);
+        // 🔥 Cek existing dengan timeout
+        const [existing] = await db.query({
+            sql: 'SELECT * FROM pesanan WHERE id = ? OR order_id = ?',
+            timeout: 10000, // 10 detik timeout
+        }, [id, id]);
 
         if (existing.length === 0) {
             return res.status(404).json({
@@ -515,42 +522,78 @@ const updateStatusPesanan = async (req, res) => {
             });
         }
 
-        await db.query(`
-            UPDATE pesanan SET status = ? WHERE id = ?
-        `, [status, existing[0].id]);
+        // 🔥 Gunakan transaksi dengan timeout
+        const connection = await db.getConnection();
 
-        // Jika status paid, update pay_status dan pay_at
-        if (status === 'paid') {
-            await db.query(`
-                UPDATE pesanan SET pay_status = 'paid', pay_at = NOW() WHERE id = ?
-            `, [existing[0].id]);
+        try {
+            // Mulai transaksi dengan timeout
+            await connection.query('SET innodb_lock_wait_timeout = 10'); // 10 detik
+            await connection.beginTransaction();
+
+            // Update status utama
+            await connection.query(
+                'UPDATE pesanan SET status = ? WHERE id = ?',
+                [status, existing[0].id]
+            );
+
+            // Update tambahan berdasarkan status
+            if (status === 'paid') {
+                await connection.query(
+                    'UPDATE pesanan SET pay_status = ?, pay_at = NOW() WHERE id = ?',
+                    ['paid', existing[0].id]
+                );
+            }
+
+            if (status === 'calling' || status === 'working') {
+                await connection.query(
+                    'UPDATE pesanan SET matching_status = ? WHERE id = ?',
+                    [status, existing[0].id]
+                );
+            }
+
+            if (status === 'approved' || status === 'rejected') {
+                await connection.query(
+                    'UPDATE pesanan SET matching_status = ? WHERE id = ?',
+                    [status, existing[0].id]
+                );
+            }
+
+            // Commit transaksi
+            await connection.commit();
+
+            // Ambil data terbaru
+            const [updated] = await db.query(
+                'SELECT * FROM pesanan WHERE id = ?',
+                [existing[0].id]
+            );
+
+            res.json({
+                success: true,
+                message: `Status pesanan berhasil diupdate menjadi ${status}`,
+                data: updated[0]
+            });
+
+        } catch (error) {
+            // Rollback jika ada error
+            await connection.rollback();
+            throw error;
+        } finally {
+            // Release connection
+            connection.release();
         }
 
-        // Update matching_status berdasarkan status
-        if (status === 'calling' || status === 'working') {
-            await db.query(`
-                UPDATE pesanan SET matching_status = ? WHERE id = ?
-            `, [status, existing[0].id]);
-        }
-
-        // Jika status approved atau rejected, update matching_status
-        if (status === 'approved' || status === 'rejected') {
-            await db.query(`
-                UPDATE pesanan SET matching_status = ? WHERE id = ?
-            `, [status, existing[0].id]);
-        }
-
-        const [updated] = await db.query(`
-            SELECT * FROM pesanan WHERE id = ?
-        `, [existing[0].id]);
-
-        res.json({
-            success: true,
-            message: `Status pesanan berhasil diupdate menjadi ${status}`,
-            data: updated[0]
-        });
     } catch (error) {
         console.error('Error updateStatusPesanan:', error);
+
+        // 🔥 Cek jika error lock timeout
+        if (error.code === 'ER_LOCK_WAIT_TIMEOUT') {
+            return res.status(409).json({
+                success: false,
+                message: 'Terjadi konflik pada database. Silakan coba lagi.',
+                error: 'Database lock timeout'
+            });
+        }
+
         res.status(500).json({
             success: false,
             message: 'Gagal mengupdate status pesanan',
