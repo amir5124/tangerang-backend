@@ -8,6 +8,11 @@ const moment = require('moment-timezone');
 // ============================================================
 // HELPER: Notifikasi ke admin & customer & pekerja
 // ============================================================
+// controllers/artPaymentController.js
+
+// ============================================================
+// HELPER: Notifikasi ke admin & customer & pekerja
+// ============================================================
 const notifyArtOrderPaid = async (connection, pesananId) => {
     const tag = `[notifyArtOrderPaid][Pesanan#${pesananId}]`;
     console.log(`${tag} 🔔 ===== MEMULAI PROSES NOTIFIKASI =====`);
@@ -27,7 +32,14 @@ const notifyArtOrderPaid = async (connection, pesananId) => {
                 p.jam,
                 p.alamat,
                 p.catatan,
-                p.created_at
+                p.created_at,
+                p.layanan,
+                p.kategori,
+                p.jenis_gedung,
+                p.sub_total,
+                p.biaya_app,
+                p.biaya_trans,
+                p.diskon
              FROM pesanan p
              WHERE p.id = ?`,
             [pesananId]
@@ -39,27 +51,54 @@ const notifyArtOrderPaid = async (connection, pesananId) => {
         }
 
         const pesanan = rows[0];
+
+        // 🔥 PARSE layanan jika berupa string JSON
+        let layananDisplay = '';
+        try {
+            if (pesanan.layanan) {
+                const layananArray = typeof pesanan.layanan === 'string'
+                    ? JSON.parse(pesanan.layanan)
+                    : pesanan.layanan;
+
+                if (Array.isArray(layananArray)) {
+                    layananDisplay = layananArray.map(item =>
+                        `${item.nama || item.service_name || 'Layanan'} x${item.qty || 1}`
+                    ).join(', ');
+                }
+            }
+        } catch (e) {
+            console.warn(`${tag} ⚠️ Gagal parse layanan:`, e.message);
+            layananDisplay = 'Lihat detail di aplikasi';
+        }
+
         console.log(`${tag} ✅ Data pesanan ditemukan:`);
         console.log(`${tag}    📋 order_id    : ${pesanan.order_id}`);
         console.log(`${tag}    👤 cust_nama   : ${pesanan.cust_nama}`);
         console.log(`${tag}    🆔 cust_id     : ${pesanan.cust_id}`);
         console.log(`${tag}    👷 worker_nama : ${pesanan.worker_nama || '(tidak ada)'}`);
         console.log(`${tag}    💰 total       : Rp${parseInt(pesanan.total).toLocaleString('id-ID')}`);
+        console.log(`${tag}    📦 layanan     : ${layananDisplay}`);
 
         const totalFormatted = parseInt(pesanan.total).toLocaleString('id-ID');
 
-        // 1. Notifikasi ke Admin
+        // 1. Notifikasi ke Admin - 🔥 DIREVISI
         console.log(`${tag} 📤 [1/3] Mengirim notifikasi ke ADMIN...`);
         try {
+            // 🔥 KIRIM DATA YANG AMAN, TIDAK MENGANDUNG OBJECT
             await sendToRole(
                 'admin',
                 '🧹 Pesanan ART/Babysitter Baru!',
-                `Pesanan #${pesanan.order_id} dari ${pesanan.cust_nama} (${pesanan.cust_hp}) untuk ${pesanan.worker_nama || 'kandidat'} sebesar Rp${totalFormatted}`,
+                `Pesanan #${pesanan.order_id} dari ${pesanan.cust_nama} (${pesanan.cust_hp}) - Total Rp${totalFormatted} - Layanan: ${layananDisplay.substring(0, 50)}${layananDisplay.length > 50 ? '...' : ''}`,
                 {
                     orderId: String(pesanan.order_id),
                     type: 'ADMIN_ART_ORDER',
                     screen: 'ArtOrderDetail',
-                    pesanan_id: String(pesananId)
+                    pesanan_id: String(pesananId),
+                    // 🔥 KIRIM DATA DALAM BENTUK STRING, BUKAN OBJECT
+                    layanan_summary: layananDisplay.substring(0, 100),
+                    total: String(pesanan.total),
+                    customer_name: pesanan.cust_nama,
+                    customer_phone: pesanan.cust_hp || '-'
                 }
             );
             console.log(`${tag} ✅ [1/3] Notif Admin BERHASIL terkirim`);
@@ -112,9 +151,9 @@ const notifyArtOrderPaid = async (connection, pesananId) => {
         console.log(`${tag} 🎉 ===== PROSES NOTIFIKASI SELESAI =====`);
     } catch (err) {
         console.error(`${tag} ❌❌❌ ERROR FATAL:`, err.message);
+        console.error(`${tag} Stack:`, err.stack);
     }
 };
-
 // ============================================================
 // HELPER: Notifikasi saat pesanan dibuat (sebelum bayar)
 // ============================================================
