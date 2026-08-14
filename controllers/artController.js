@@ -2,6 +2,22 @@
 const db = require('../config/db');
 
 // ============================================================
+// ✅ DAFTAR STATUS VALID (SUMBER KEBENARAN TUNGGAL)
+// Dipakai di updateStatusPesanan & updateMatchingStatus supaya
+// tidak ada lagi 2 definisi yang beda seperti sebelumnya.
+// ============================================================
+const VALID_STATUS = [
+    'pending', 'paid', 'matching', 'calling', 'working',
+    'berangkat_dari_cicana', 'berangkat_cek_kesehatan', 'berangkat_siap_diantar',
+    'approved', 'rejected', 'rejected_searching', 'completed', 'cancelled'
+];
+
+const VALID_MATCHING_STATUS = [
+    'pending', 'matching', 'calling', 'working',
+    'approved', 'rejected', 'rejected_searching'
+];
+
+// ============================================================
 // GET: Semua pesanan
 // ============================================================
 const getAllPesanan = async (req, res) => {
@@ -59,6 +75,11 @@ const getAllPesanan = async (req, res) => {
                 voc_valid,
                 status,
                 matching_status,
+                gomeet_link,
+                call_date,
+                call_slot,
+                departure_method,
+                departure_date,
                 created_at,
                 updated_at
             FROM pesanan
@@ -150,11 +171,15 @@ const getActivePesananByCustomer = async (req, res) => {
     try {
         const { cust_id } = req.params;
 
+        // ✅ FIX BUG POIN 5: sebelumnya hanya mengecek
+        // status IN ('pending','paid','matching') sehingga saat status
+        // sudah berubah ke 'approved'/'calling'/dst, pesanan "hilang" dari
+        // daftar aktif dan user seolah dilempar balik ke halaman pesanan
+        // kosong. Sekarang semua status yang BUKAN status akhir dianggap aktif.
         const [rows] = await db.query(`
             SELECT * FROM pesanan 
             WHERE cust_id = ? 
-            AND status IN ('pending', 'paid', 'matching')
-            AND matching_status IN ('pending', 'matching')
+            AND status NOT IN ('completed', 'cancelled', 'rejected')
             ORDER BY created_at DESC
         `, [cust_id]);
 
@@ -256,6 +281,46 @@ const getPesananByMatchingStatus = async (req, res) => {
         res.status(500).json({
             success: false,
             message: 'Gagal mengambil data pesanan',
+            error: error.message
+        });
+    }
+};
+
+// ============================================================
+// GET: History status pesanan (untuk fitur "History Pesanan" di sisi user)
+// ============================================================
+const getPesananHistory = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const [existing] = await db.query(
+            `SELECT id FROM pesanan WHERE id = ? OR order_id = ?`,
+            [id, id]
+        );
+        if (existing.length === 0) {
+            return res.status(404).json({ success: false, message: 'Pesanan tidak ditemukan' });
+        }
+
+        // NOTE: sesuaikan nama kolom di bawah ini dengan struktur asli
+        // tabel order_status_logs (jalankan `DESC order_status_logs;`
+        // untuk konfirmasi nama kolomnya).
+        const [logs] = await db.query(
+            `SELECT * FROM order_status_logs 
+             WHERE pesanan_id = ? 
+             ORDER BY created_at ASC`,
+            [existing[0].id]
+        );
+
+        res.json({
+            success: true,
+            message: 'History status pesanan berhasil diambil',
+            data: logs
+        });
+    } catch (error) {
+        console.error('Error getPesananHistory:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Gagal mengambil history pesanan',
             error: error.message
         });
     }
@@ -427,7 +492,7 @@ const createPesanan = async (req, res) => {
 };
 
 // ============================================================
-// PUT: Update pesanan
+// PUT: Update pesanan (generic)
 // ============================================================
 const updatePesanan = async (req, res) => {
     try {
@@ -488,31 +553,76 @@ const updatePesanan = async (req, res) => {
 };
 
 // ============================================================
-// PUT: Update status pesanan
+// HELPER: Insert log history status (dipanggil di updateStatusPesanan)
+// Dibuat defensif: kalau tabel/kolomnya beda, tidak menggagalkan update utama.
 // ============================================================
-// controllers/artController.js
+const logStatusChange = async (connection, pesananId, statusFrom, statusTo, note) => {
+    try {
+        await connection.query(
+            `INSERT INTO order_status_logs (pesanan_id, status_from, status_to, note, created_at)
+             VALUES (?, ?, ?, ?, NOW())`,
+            [pesananId, statusFrom, statusTo, note || null]
+        );
+    } catch (err) {
+        // Sengaja tidak di-throw ulang: history adalah "nice to have",
+        // jangan sampai gagal update status utama gara-gara logging error.
+        console.warn(`⚠️ Gagal mencatat history status pesanan #${pesananId}:`, err.message);
+    }
+};
 
 // ============================================================
-// PUT: Update status pesanan - dengan handling lock timeout
+// PUT: Update status pesanan
+// ✅ Mendukung status baru + payload tambahan (Gomeet, jadwal call,
+//    metode & tanggal keberangkatan) + history log
 // ============================================================
 const updateStatusPesanan = async (req, res) => {
     try {
         const { id } = req.params;
-        const { status } = req.body;
+        const {
+            status,
+            gomeet_link,
+            call_date,
+            call_slot,
+            departure_method,
+            departure_date,
+            note
+        } = req.body;
 
-        // ✅ Validasi status
-        const validStatus = ['pending', 'paid', 'matching', 'calling', 'working', 'approved', 'rejected', 'completed', 'cancelled'];
-        if (!validStatus.includes(status)) {
+        // ✅ Validasi status pakai daftar tunggal di atas
+        if (!VALID_STATUS.includes(status)) {
             return res.status(400).json({
                 success: false,
-                message: 'Status tidak valid. Gunakan: pending, paid, matching, calling, working, approved, rejected, completed, cancelled'
+                message: `Status tidak valid. Gunakan salah satu: ${VALID_STATUS.join(', ')}`
             });
         }
 
-        // 🔥 Cek existing dengan timeout
+        // Validasi tambahan khusus per status
+        if (status === 'calling') {
+            if (!gomeet_link || !call_slot) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'gomeet_link dan call_slot wajib diisi untuk status calling'
+                });
+            }
+        }
+        if (status === 'berangkat_siap_diantar') {
+            if (!departure_method || !['driver_online', 'dijemput_user'].includes(departure_method)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'departure_method wajib diisi (driver_online / dijemput_user)'
+                });
+            }
+            if (!departure_date) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'departure_date wajib diisi'
+                });
+            }
+        }
+
         const [existing] = await db.query({
             sql: 'SELECT * FROM pesanan WHERE id = ? OR order_id = ?',
-            timeout: 10000, // 10 detik timeout
+            timeout: 10000,
         }, [id, id]);
 
         if (existing.length === 0) {
@@ -522,49 +632,57 @@ const updateStatusPesanan = async (req, res) => {
             });
         }
 
-        // 🔥 Gunakan transaksi dengan timeout
+        const pesananRow = existing[0];
+        const previousStatus = pesananRow.status;
+
         const connection = await db.getConnection();
 
         try {
-            // Mulai transaksi dengan timeout
-            await connection.query('SET innodb_lock_wait_timeout = 10'); // 10 detik
+            await connection.query('SET innodb_lock_wait_timeout = 10');
             await connection.beginTransaction();
 
-            // Update status utama
+            // ✅ Bangun SET clause dinamis berdasarkan field yang relevan
+            const setFields = ['status = ?'];
+            const setValues = [status];
+
+            if (status === 'calling') {
+                setFields.push('gomeet_link = ?', 'call_date = ?', 'call_slot = ?');
+                setValues.push(gomeet_link, call_date || null, call_slot);
+            }
+
+            if (status === 'berangkat_siap_diantar') {
+                setFields.push('departure_method = ?', 'departure_date = ?');
+                setValues.push(departure_method, departure_date);
+            }
+
+            if (status === 'paid') {
+                setFields.push('pay_status = ?', 'pay_at = NOW()');
+                setValues.push('paid');
+            }
+
+            // ✅ Sinkronkan matching_status supaya tidak ada 2 sumber kebenaran
+            // yang beda seperti sebelumnya (ini yang jadi sumber bug poin 5)
+            const matchingSyncStatuses = ['matching', 'calling', 'working', 'approved', 'rejected', 'rejected_searching'];
+            if (matchingSyncStatuses.includes(status)) {
+                setFields.push('matching_status = ?');
+                setValues.push(status);
+            }
+
+            setValues.push(pesananRow.id);
+
             await connection.query(
-                'UPDATE pesanan SET status = ? WHERE id = ?',
-                [status, existing[0].id]
+                `UPDATE pesanan SET ${setFields.join(', ')} WHERE id = ?`,
+                setValues
             );
 
-            // Update tambahan berdasarkan status
-            if (status === 'paid') {
-                await connection.query(
-                    'UPDATE pesanan SET pay_status = ?, pay_at = NOW() WHERE id = ?',
-                    ['paid', existing[0].id]
-                );
-            }
-
-            if (status === 'calling' || status === 'working') {
-                await connection.query(
-                    'UPDATE pesanan SET matching_status = ? WHERE id = ?',
-                    [status, existing[0].id]
-                );
-            }
-
-            if (status === 'approved' || status === 'rejected') {
-                await connection.query(
-                    'UPDATE pesanan SET matching_status = ? WHERE id = ?',
-                    [status, existing[0].id]
-                );
-            }
-
-            // Commit transaksi
             await connection.commit();
 
-            // Ambil data terbaru
+            // Catat history (di luar transaksi utama, defensif)
+            await logStatusChange(connection, pesananRow.id, previousStatus, status, note);
+
             const [updated] = await db.query(
                 'SELECT * FROM pesanan WHERE id = ?',
-                [existing[0].id]
+                [pesananRow.id]
             );
 
             res.json({
@@ -574,18 +692,15 @@ const updateStatusPesanan = async (req, res) => {
             });
 
         } catch (error) {
-            // Rollback jika ada error
             await connection.rollback();
             throw error;
         } finally {
-            // Release connection
             connection.release();
         }
 
     } catch (error) {
         console.error('Error updateStatusPesanan:', error);
 
-        // 🔥 Cek jika error lock timeout
         if (error.code === 'ER_LOCK_WAIT_TIMEOUT') {
             return res.status(409).json({
                 success: false,
@@ -604,18 +719,17 @@ const updateStatusPesanan = async (req, res) => {
 
 // ============================================================
 // PUT: Update matching status
+// ✅ Konsisten pakai VALID_MATCHING_STATUS, termasuk rejected_searching
 // ============================================================
 const updateMatchingStatus = async (req, res) => {
     try {
         const { id } = req.params;
         const { matching_status } = req.body;
 
-        // ✅ Tambahkan 'calling' dan 'working' ke validasi matching status
-        const validStatus = ['pending', 'matching', 'calling', 'working', 'approved', 'rejected'];
-        if (!validStatus.includes(matching_status)) {
+        if (!VALID_MATCHING_STATUS.includes(matching_status)) {
             return res.status(400).json({
                 success: false,
-                message: 'Matching status tidak valid. Gunakan: pending, matching, calling, working, approved, rejected'
+                message: `Matching status tidak valid. Gunakan: ${VALID_MATCHING_STATUS.join(', ')}`
             });
         }
 
@@ -630,23 +744,19 @@ const updateMatchingStatus = async (req, res) => {
             });
         }
 
-        // Update status utama berdasarkan matching_status
-        let statusUpdate = '';
-        if (matching_status === 'approved') {
-            statusUpdate = ', status = "approved"';
-        } else if (matching_status === 'rejected') {
-            statusUpdate = ', status = "rejected"';
-        } else if (matching_status === 'calling') {
-            statusUpdate = ', status = "calling"';
-        } else if (matching_status === 'working') {
-            statusUpdate = ', status = "working"';
-        }
+        // ✅ Status utama SELALU disamakan dengan matching_status untuk
+        // status2 yang relevan (bukan cuma approved/rejected seperti sebelumnya)
+        const statusSyncable = ['matching', 'calling', 'working', 'approved', 'rejected', 'rejected_searching'];
+        const statusUpdate = statusSyncable.includes(matching_status) ? ', status = ?' : '';
+        const params = statusSyncable.includes(matching_status)
+            ? [matching_status, matching_status, existing[0].id]
+            : [matching_status, existing[0].id];
 
         await db.query(`
             UPDATE pesanan 
             SET matching_status = ? ${statusUpdate}
             WHERE id = ?
-        `, [matching_status, existing[0].id]);
+        `, params);
 
         const [updated] = await db.query(`
             SELECT * FROM pesanan WHERE id = ?
@@ -846,6 +956,7 @@ module.exports = {
     getPesananByWorker,
     getPesananByStatus,
     getPesananByMatchingStatus,
+    getPesananHistory,
     createPesanan,
     updatePesanan,
     updateStatusPesanan,

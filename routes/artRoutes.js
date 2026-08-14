@@ -9,7 +9,7 @@ const artController = require('../controllers/artController');
 
 // GET: Semua pesanan
 router.get('/', artController.getAllPesanan);
-// routes/artRoutes.js
+
 router.get('/active/:cust_id', artController.getActivePesananByCustomer);
 router.get('/matching-status/:matching_status', artController.getPesananByMatchingStatus);
 router.put('/:id/matching', artController.updateMatchingStatus);
@@ -28,6 +28,9 @@ router.get('/customer/:cust_id', artController.getPesananByCustomer);
 
 // GET: Pesanan by worker
 router.get('/worker/:worker_id', artController.getPesananByWorker);
+
+// NEW: GET History status pesanan (untuk fitur History Pesanan sisi user)
+router.get('/:id/history', artController.getPesananHistory);
 
 // GET: Pesanan by ID
 router.get('/:id', artController.getPesananById);

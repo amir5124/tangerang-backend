@@ -8,11 +8,6 @@ const moment = require('moment-timezone');
 // ============================================================
 // HELPER: Notifikasi ke admin & customer & pekerja
 // ============================================================
-// controllers/artPaymentController.js
-
-// ============================================================
-// HELPER: Notifikasi ke admin & customer & pekerja
-// ============================================================
 const notifyArtOrderPaid = async (connection, pesananId) => {
     const tag = `[notifyArtOrderPaid][Pesanan#${pesananId}]`;
     console.log(`${tag} 🔔 ===== MEMULAI PROSES NOTIFIKASI =====`);
@@ -81,10 +76,9 @@ const notifyArtOrderPaid = async (connection, pesananId) => {
 
         const totalFormatted = parseInt(pesanan.total).toLocaleString('id-ID');
 
-        // 1. Notifikasi ke Admin - 🔥 DIREVISI
+        // 1. Notifikasi ke Admin
         console.log(`${tag} 📤 [1/3] Mengirim notifikasi ke ADMIN...`);
         try {
-            // 🔥 KIRIM DATA YANG AMAN, TIDAK MENGANDUNG OBJECT
             await sendToRole(
                 'admin',
                 '🧹 Pesanan ART/Babysitter Baru!',
@@ -94,7 +88,6 @@ const notifyArtOrderPaid = async (connection, pesananId) => {
                     type: 'ADMIN_ART_ORDER',
                     screen: 'ArtOrderDetail',
                     pesanan_id: String(pesananId),
-                    // 🔥 KIRIM DATA DALAM BENTUK STRING, BUKAN OBJECT
                     layanan_summary: layananDisplay.substring(0, 100),
                     total: String(pesanan.total),
                     customer_name: pesanan.cust_nama,
@@ -154,6 +147,7 @@ const notifyArtOrderPaid = async (connection, pesananId) => {
         console.error(`${tag} Stack:`, err.stack);
     }
 };
+
 // ============================================================
 // HELPER: Notifikasi saat pesanan dibuat (sebelum bayar)
 // ============================================================
@@ -303,7 +297,7 @@ const createArtPayment = async (req, res) => {
 };
 
 // ============================================================
-// WEBHOOK CALLBACK untuk ART Payment - FINAL FIX
+// WEBHOOK CALLBACK untuk ART Payment
 // ============================================================
 const handleArtCallback = async (req, res) => {
     const connection = await db.getConnection();
@@ -313,7 +307,6 @@ const handleArtCallback = async (req, res) => {
     try {
         const body = req.body;
 
-        // 🔥 SUPPORT MULTIPLE PAYLOAD FORMAT
         let partner_reff = body.partner_reff || body.reference_id || body.order_id || body.reference || body.transaction_id;
         let status = body.status || body.transaction_status || body.payment_status || body.response_desc;
         let amount = body.amount || body.gross_amount || body.total || body.amount_paid;
@@ -325,11 +318,9 @@ const handleArtCallback = async (req, res) => {
             return res.status(400).json({ success: false, message: "Missing partner_reff" });
         }
 
-        // 🔥 NORMALIZE STATUS
         const normalizedStatus = String(status).toUpperCase();
         console.log(`📩 [ART Webhook] Normalized Status: ${normalizedStatus}`);
 
-        // 🔥 CEK SEMUA KEMUNGKINAN STATUS SUKSES (termasuk APPROVE/SUCCESS)
         const isSuccess = ['SUCCESS', 'SETTLED', 'SETTLEMENT', 'PAID', 'COMPLETED', 'DONE', 'APPROVE/SUCCESS'].includes(normalizedStatus);
 
         if (isSuccess) {
@@ -348,7 +339,6 @@ const handleArtCallback = async (req, res) => {
                 const pesananId = rows[0].id;
                 console.log(`✅ [ART Webhook] Pesanan ditemukan, ID: ${pesananId}, pay_status: ${rows[0].pay_status}`);
 
-                // 🔥 CEK APAKAH SUDAH PERNAH DIUPDATE
                 if (rows[0].pay_status === 'settlement') {
                     console.log(`ℹ️ [ART Webhook] Pesanan #${pesananId} sudah settlement, skip update`);
                     await connection.commit();
@@ -360,7 +350,6 @@ const handleArtCallback = async (req, res) => {
                     });
                 }
 
-                // Update status
                 console.log(`📝 [ART Webhook] Updating pesanan #${pesananId}...`);
                 await connection.execute(
                     `UPDATE pesanan 
@@ -376,7 +365,6 @@ const handleArtCallback = async (req, res) => {
                 await connection.commit();
                 console.log(`✅ [ART Webhook] Pesanan #${pesananId} lunas. COMMIT success`);
 
-                // Kirim notifikasi
                 console.log(`📣 [ART Webhook] Memanggil notifyArtOrderPaid...`);
                 await notifyArtOrderPaid(connection, pesananId);
                 console.log(`✅ [ART Webhook] notifyArtOrderPaid selesai`);
@@ -408,7 +396,7 @@ const handleArtCallback = async (req, res) => {
 };
 
 // ============================================================
-// CHECK PAYMENT STATUS untuk ART - FINAL FIX
+// CHECK PAYMENT STATUS untuk ART
 // ============================================================
 const checkArtPaymentStatus = async (req, res) => {
     const { partnerReff } = req.params;
@@ -435,7 +423,6 @@ const checkArtPaymentStatus = async (req, res) => {
         const { id: pesananId, pay_status, expired_at, status, matching_status } = rows[0];
         console.log(`📊 [ART CheckPayment] Status DB: pay_status=${pay_status}, status=${status}, matching_status=${matching_status}`);
 
-        // 🔥 CEK APAKAH SUDAH SETTLEMENT - LANGSUNG RETURN SUCCESS
         if (pay_status === 'settlement' || pay_status === 'SUCCESS' || status === 'paid') {
             console.log(`✅ [ART CheckPayment] Payment already SUCCESS, returning SUCCESS`);
             return res.json({
@@ -445,7 +432,6 @@ const checkArtPaymentStatus = async (req, res) => {
             });
         }
 
-        // Cek expired
         if (pay_status === 'pending' && new Date() > new Date(expired_at)) {
             console.log(`⏰ [ART CheckPayment] Transaksi EXPIRED: ${partnerReff}`);
             await connection.beginTransaction();
@@ -457,7 +443,6 @@ const checkArtPaymentStatus = async (req, res) => {
             return res.json({ success: true, status: 'EXPIRED' });
         }
 
-        // 🔥 CEK KE LINKQU HANYA JIKA MASIH PENDING
         if (pay_status === 'pending') {
             console.log(`🔍 [ART CheckPayment] Calling linkqu.checkStatus('${partnerReff}')...`);
             let linkquResult;
@@ -469,22 +454,19 @@ const checkArtPaymentStatus = async (req, res) => {
                 linkquResult = { status: 'ERROR' };
             }
 
-            // 🔥 FIX: CEK SEMUA KEMUNGKINAN FIELD STATUS DARI LINKQU
             const linkquData = linkquResult?.data || linkquResult || {};
 
-            // 🔥 PRIORITAS FIELD STATUS DARI LINKQU
             const linkquStatus =
-                linkquData?.status_trx ||           // ← "success"
-                linkquData?.status_desc ||          // ← "APPROVE/SUCCESS"  
-                linkquData?.status_paid ||          // ← "paid"
-                linkquData?.status ||               // ← fallback
-                linkquResult?.status ||             // ← fallback
-                linkquResult?.response_desc ||      // ← fallback
+                linkquData?.status_trx ||
+                linkquData?.status_desc ||
+                linkquData?.status_paid ||
+                linkquData?.status ||
+                linkquResult?.status ||
+                linkquResult?.response_desc ||
                 null;
 
             console.log(`📊 [ART CheckPayment] Extracted LinkQu status: ${linkquStatus}`);
 
-            // 🔥 CEK APAKAH STATUS MENUNJUKKAN SUKSES
             const statusStr = String(linkquStatus).toUpperCase();
             const isSuccess =
                 statusStr.includes('SUCCESS') ||
@@ -515,7 +497,6 @@ const checkArtPaymentStatus = async (req, res) => {
             }
         }
 
-        // Default: return status dari database
         res.json({
             success: true,
             status: pay_status.toUpperCase(),
@@ -536,122 +517,16 @@ const checkArtPaymentStatus = async (req, res) => {
 };
 
 // ============================================================
-// GET PESANAN BY ID
-// ============================================================
-const getPesananById = async (req, res) => {
-    const { id } = req.params;
-    console.log(`🔍 [GET Pesanan] Fetching pesanan #${id}`);
-
-    try {
-        const [rows] = await db.execute(
-            `SELECT * FROM pesanan WHERE id = ? OR order_id = ?`,
-            [id, id]
-        );
-
-        if (rows.length === 0) {
-            return res.status(404).json({
-                success: false,
-                message: "Pesanan tidak ditemukan"
-            });
-        }
-
-        console.log(`✅ [GET Pesanan] Found: ${rows[0].order_id}, status: ${rows[0].status}, matching_status: ${rows[0].matching_status}`);
-        res.json({
-            success: true,
-            data: rows[0]
-        });
-    } catch (err) {
-        console.error("[GET Pesanan] Error:", err.message);
-        res.status(500).json({
-            success: false,
-            message: "Internal Server Error"
-        });
-    }
-};
-
-// ============================================================
-// UPDATE MATCHING STATUS (untuk admin)
-// ============================================================
-const updateMatchingStatus = async (req, res) => {
-    const { id } = req.params;
-    const { matching_status } = req.body;
-
-    console.log(`🔄 [Update Matching] Pesanan #${id} → ${matching_status}`);
-
-    if (!['pending', 'matching', 'approved', 'rejected'].includes(matching_status)) {
-        return res.status(400).json({
-            success: false,
-            message: "Status matching tidak valid"
-        });
-    }
-
-    const connection = await db.getConnection();
-    try {
-        await connection.beginTransaction();
-
-        const [rows] = await connection.execute(
-            `SELECT id, status FROM pesanan WHERE id = ?`,
-            [id]
-        );
-
-        if (rows.length === 0) {
-            return res.status(404).json({
-                success: false,
-                message: "Pesanan tidak ditemukan"
-            });
-        }
-
-        const currentStatus = rows[0].status;
-
-        if (currentStatus !== 'paid' && currentStatus !== 'pending') {
-            return res.status(400).json({
-                success: false,
-                message: "Pesanan tidak dalam status yang tepat untuk matching"
-            });
-        }
-
-        await connection.execute(
-            `UPDATE pesanan 
-             SET matching_status = ?,
-                 status = CASE 
-                     WHEN ? = 'approved' THEN 'approved'
-                     WHEN ? = 'rejected' THEN 'rejected'
-                     ELSE status
-                 END
-             WHERE id = ?`,
-            [matching_status, matching_status, matching_status, id]
-        );
-
-        await connection.commit();
-
-        console.log(`✅ [Update Matching] Pesanan #${id} matching_status → ${matching_status}`);
-        res.json({
-            success: true,
-            message: `Matching status berhasil diupdate menjadi ${matching_status}`,
-            data: { id, matching_status }
-        });
-
-    } catch (err) {
-        if (connection) await connection.rollback();
-        console.error("[Update Matching] Error:", err.message);
-        res.status(500).json({
-            success: false,
-            message: "Internal Server Error"
-        });
-    } finally {
-        connection.release();
-    }
-};
-
-// ============================================================
 // EXPORT MODULE
+// ✅ updateMatchingStatus & getPesananById DIHAPUS dari sini —
+// gunakan versi di artController.js sebagai satu-satunya sumber
+// kebenaran (sebelumnya ada 2 definisi berbeda yang menyebabkan
+// bug status tidak sinkron di sisi user / poin 5 request meeting).
 // ============================================================
 module.exports = {
     createArtPayment,
     handleArtCallback,
     checkArtPaymentStatus,
     notifyArtOrderPaid,
-    notifyArtOrderCreated,
-    getPesananById,
-    updateMatchingStatus
+    notifyArtOrderCreated
 };
