@@ -327,9 +327,22 @@ const getPesananHistory = async (req, res) => {
 };
 
 // ============================================================
-// POST: Buat pesanan baru
+// GANTI FUNGSI `createPesanan` YANG LAMA DI controllers/artController.js
+// DENGAN VERSI INI.
+//
+// Yang berubah:
+// - Sekarang pakai transaction + connection (bukan db.query biasa),
+//   karena kita perlu SELECT ... FOR UPDATE terhadap voucher supaya
+//   tidak race condition kalau ada 2 order barengan.
+// - Sebelum INSERT, cek apakah cust_id punya voucher diskon yang
+//   belum dipakai (dari komplain yang di-approve admin). Kalau ada,
+//   worker_gaji_min dipotong sesuai discount_percent (default 100% = 0).
+// - Setelah INSERT berhasil, voucher ditandai is_used = 1 dan dikunci
+//   ke pesanan yang baru dibuat (used_at_pesanan_id).
 // ============================================================
+
 const createPesanan = async (req, res) => {
+    const connection = await db.getConnection();
     try {
         const {
             order_id,
@@ -377,10 +390,33 @@ const createPesanan = async (req, res) => {
             matching_status
         } = req.body;
 
-        // Generate order_id jika tidak ada
         const finalOrderId = order_id || `ORD-${Date.now()}-${Math.floor(Math.random() * 9999)}`;
 
-        const [result] = await db.query(`
+        await connection.beginTransaction();
+
+        // 🔥 Cek voucher diskon kandidat gratis (dari komplain yang di-approve admin).
+        // Ambil voucher tertua yang belum dipakai, LOCK row-nya supaya tidak
+        // kepakai 2x kalau ada request order barengan dari device yang sama.
+        let appliedVoucher = null;
+        let finalWorkerGajiMin = Number(worker_gaji_min || 0);
+
+        if (cust_id) {
+            const [voucherRows] = await connection.query(
+                `SELECT * FROM cust_discount_vouchers
+                 WHERE cust_id = ? AND is_used = 0
+                 ORDER BY created_at ASC
+                 LIMIT 1 FOR UPDATE`,
+                [cust_id]
+            );
+
+            if (voucherRows.length > 0) {
+                appliedVoucher = voucherRows[0];
+                const pct = Number(appliedVoucher.discount_percent || 0);
+                finalWorkerGajiMin = Math.max(0, Math.round(finalWorkerGajiMin * (1 - pct / 100)));
+            }
+        }
+
+        const [result] = await connection.query(`
             INSERT INTO pesanan (
                 order_id,
                 cust_id,
@@ -445,7 +481,7 @@ const createPesanan = async (req, res) => {
             worker_umur,
             worker_asal,
             worker_exp,
-            worker_gaji_min,
+            finalWorkerGajiMin, // ⬅️ sudah didiskon kalau ada voucher
             worker_gaji_max,
             worker_level,
             worker_layanan,
@@ -472,22 +508,38 @@ const createPesanan = async (req, res) => {
             matching_status || 'pending'
         ]);
 
-        const [newOrder] = await db.query(`
-            SELECT * FROM pesanan WHERE id = ?
-        `, [result.insertId]);
+        // Kunci voucher ke pesanan yang baru saja dibuat
+        if (appliedVoucher) {
+            await connection.query(
+                `UPDATE cust_discount_vouchers
+                 SET is_used = 1, used_at_pesanan_id = ?, used_at = NOW()
+                 WHERE id = ?`,
+                [result.insertId, appliedVoucher.id]
+            );
+        }
+
+        await connection.commit();
+
+        const [newOrder] = await db.query(`SELECT * FROM pesanan WHERE id = ?`, [result.insertId]);
 
         res.status(201).json({
             success: true,
-            message: 'Pesanan berhasil dibuat',
-            data: newOrder[0]
+            message: appliedVoucher
+                ? 'Pesanan berhasil dibuat — voucher diskon kandidat gratis otomatis diterapkan 🎉'
+                : 'Pesanan berhasil dibuat',
+            data: newOrder[0],
+            discount_applied: !!appliedVoucher
         });
     } catch (error) {
+        await connection.rollback();
         console.error('Error createPesanan:', error);
         res.status(500).json({
             success: false,
             message: 'Gagal membuat pesanan',
             error: error.message
         });
+    } finally {
+        connection.release();
     }
 };
 
