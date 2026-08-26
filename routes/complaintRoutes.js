@@ -16,6 +16,9 @@ router.get('/voucher/:cust_id', complaintController.getActiveDiscountVoucher);
 // USER: riwayat komplain milik customer
 router.get('/customer/:cust_id', complaintController.getComplaintsByCustomer);
 
+// USER: cek apakah sebuah pesanan sudah pernah dikomplain (+ statusnya)
+router.get('/pesanan/:pesanan_id', complaintController.getComplaintByPesananId);
+
 // ADMIN: semua komplain (bisa filter ?status=pending)
 router.get('/', complaintController.getAllComplaints);
 

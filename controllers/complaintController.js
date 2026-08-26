@@ -307,11 +307,51 @@ const getActiveDiscountVoucher = async (req, res) => {
     }
 };
 
+// ============================================================
+// GET: Komplain terbaru untuk sebuah pesanan (dipakai frontend
+// untuk cek "sudah pernah komplain belum" & tampilkan statusnya)
+// ============================================================
+const getComplaintByPesananId = async (req, res) => {
+    try {
+        const { pesanan_id } = req.params;
+
+        const [pesananRows] = await db.query(
+            `SELECT id FROM pesanan WHERE id = ? OR order_id = ?`,
+            [pesanan_id, pesanan_id]
+        );
+        if (pesananRows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Pesanan tidak ditemukan' });
+        }
+
+        const [rows] = await db.query(
+            `SELECT * FROM pesanan_complaints
+             WHERE pesanan_id = ?
+             ORDER BY created_at DESC
+             LIMIT 1`,
+            [pesananRows[0].id]
+        );
+
+        res.json({
+            success: true,
+            message: rows.length > 0 ? 'Komplain ditemukan' : 'Belum pernah komplain',
+            data: rows[0] || null
+        });
+    } catch (error) {
+        console.error('Error getComplaintByPesananId:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Gagal mengecek status komplain',
+            error: error.message
+        });
+    }
+};
+
 module.exports = {
     createComplaint,
     getAllComplaints,
     getComplaintsByCustomer,
     getComplaintById,
+    getComplaintByPesananId,
     approveComplaint,
     rejectComplaint,
     getActiveDiscountVoucher
