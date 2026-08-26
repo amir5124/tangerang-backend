@@ -2,6 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const artController = require('../controllers/artController');
+const complaintRoutes = require('./complaintRoutes');
 
 // ============================================================
 // ROUTES PESANAN (ART)
@@ -19,6 +20,13 @@ router.get('/statistik', artController.getStatistikPesanan);
 
 // GET: Laporan per tanggal
 router.get('/laporan', artController.getLaporanPerTanggal);
+
+// ============================================================
+// 🔥 FITUR KOMPLAIN — dimount di /api/pesanan/complaints/...
+// HARUS didaftarkan SEBELUM router.get('/:id', ...) di bawah,
+// supaya "complaints" tidak ketangkep sebagai :id.
+// ============================================================
+router.use('/complaints', complaintRoutes);
 
 // GET: Pesanan by status
 router.get('/status/:status', artController.getPesananByStatus);
@@ -48,3 +56,11 @@ router.put('/:id/status', artController.updateStatusPesanan);
 router.delete('/:id', artController.deletePesanan);
 
 module.exports = router;
+
+// ============================================================
+// Di app.js utama, tetap cukup satu baris ini seperti sebelumnya:
+//
+//   app.use('/api/pesanan', artRoutes);
+//
+// TIDAK perlu lagi app.use('/api/complaints', ...) terpisah.
+// ============================================================

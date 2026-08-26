@@ -31,8 +31,19 @@ router.put('/:id/reject', complaintController.rejectComplaint);
 module.exports = router;
 
 // ============================================================
-// Tambahkan ini di app.js utama:
+// File ini di-mount sebagai SUB-ROUTER di dalam routes/artRoutes.js:
 //
-//   const complaintRoutes = require('./routes/complaintRoutes');
-//   app.use('/api/complaints', complaintRoutes);
+//   const complaintRoutes = require('./complaintRoutes');
+//   router.use('/complaints', complaintRoutes);
+//
+// Jadi endpoint final-nya jadi (di bawah app.use('/api/pesanan', artRoutes)):
+//   POST /api/pesanan/complaints
+//   GET  /api/pesanan/complaints
+//   GET  /api/pesanan/complaints/:id
+//   GET  /api/pesanan/complaints/customer/:cust_id
+//   GET  /api/pesanan/complaints/voucher/:cust_id
+//   PUT  /api/pesanan/complaints/:id/approve
+//   PUT  /api/pesanan/complaints/:id/reject
+//
+// TIDAK perlu lagi app.use('/api/complaints', ...) terpisah di app.js.
 // ============================================================
