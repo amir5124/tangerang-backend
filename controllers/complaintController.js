@@ -346,6 +346,51 @@ const getComplaintByPesananId = async (req, res) => {
     }
 };
 
+// ============================================================
+// PUT: Tandai voucher diskon sudah dipakai (dipanggil FRONTEND
+// setelah order baru berhasil dibuat, BUKAN dari createPesanan,
+// supaya endpoint pembuatan pesanan tetap independen).
+// ============================================================
+const useDiscountVoucher = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { pesanan_id } = req.body;
+
+        const [rows] = await db.query(
+            `SELECT * FROM cust_discount_vouchers WHERE id = ?`,
+            [id]
+        );
+        if (rows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Voucher tidak ditemukan' });
+        }
+        if (rows[0].is_used) {
+            return res.status(409).json({ success: false, message: 'Voucher sudah pernah dipakai' });
+        }
+
+        await db.query(
+            `UPDATE cust_discount_vouchers
+             SET is_used = 1, used_pesanan_id = ?, used_at = NOW()
+             WHERE id = ?`,
+            [pesanan_id || null, id]
+        );
+
+        const [updated] = await db.query(`SELECT * FROM cust_discount_vouchers WHERE id = ?`, [id]);
+
+        res.json({
+            success: true,
+            message: 'Voucher berhasil ditandai sudah dipakai',
+            data: updated[0]
+        });
+    } catch (error) {
+        console.error('Error useDiscountVoucher:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Gagal menandai voucher terpakai',
+            error: error.message
+        });
+    }
+};
+
 module.exports = {
     createComplaint,
     getAllComplaints,
@@ -354,5 +399,6 @@ module.exports = {
     getComplaintByPesananId,
     approveComplaint,
     rejectComplaint,
-    getActiveDiscountVoucher
+    getActiveDiscountVoucher,
+    useDiscountVoucher
 };

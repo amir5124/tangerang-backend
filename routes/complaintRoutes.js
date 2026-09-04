@@ -30,6 +30,8 @@ router.get('/:id', complaintController.getComplaintById);
 // supaya bukan sembarang orang bisa approve komplain & nerbitin voucher gratis.
 router.put('/:id/approve', complaintController.approveComplaint);
 router.put('/:id/reject', complaintController.rejectComplaint);
+// USER: tandai voucher sudah dipakai (dipanggil setelah order sukses dibuat)
+router.put('/voucher/:id/use', complaintController.useDiscountVoucher);
 
 module.exports = router;
 
