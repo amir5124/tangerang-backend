@@ -82,15 +82,7 @@ const upsertDeviceToken = async (userId, fcmToken, userAgent = '') => {
         // LOG 4: MULAI QUERY
         console.log(`${tag} 📝 Menonaktifkan token lama...`);
 
-        // Nonaktifkan token LAMA milik user ini sendiri
-        const [deactivateResult] = await db.query(
-            'UPDATE user_devices SET is_active = 0 WHERE user_id = ? AND fcm_token != ?',
-            [userId, fcmToken]
-        );
-        console.log(`${tag} 📝 Token lama dinonaktifkan: ${deactivateResult.affectedRows} row(s)`);
 
-        // LOG 5: UPSERT TOKEN
-        console.log(`${tag} 📝 Menyimpan token baru ke user_devices...`);
 
         const [upsertResult] = await db.query(`
             INSERT INTO user_devices (user_id, fcm_token, device_type, is_active, last_used_at)
