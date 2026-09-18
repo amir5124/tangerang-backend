@@ -17,8 +17,8 @@ const loginLimiter = rateLimit({
 });
 
 const resetPasswordLimiter = rateLimit({
-    windowMs: 60 * 60 * 1000, // 1 jam
-    max: 3, // Maksimal 3 kali request per jam per IP
+    windowMs: 60 * 60 * 1000,
+    max: 3,
     message: {
         success: false,
         message: "Terlalu banyak permintaan reset password. Silakan coba lagi setelah 1 jam."
@@ -33,9 +33,8 @@ router.post('/logout', authenticateToken, authController.logout);
 router.put('/update-profile', authenticateToken, upload.single('image'), authController.updateProfile);
 router.put('/change-password', authenticateToken, authController.changePassword);
 router.post('/update-fcm-token', authenticateToken, authController.refreshDeviceToken);
-// 1. Minta link reset (Input Email)
+router.post('/refresh-device-token', authenticateToken, authController.refreshDeviceToken); // 🆕 alias, sama controller
 router.post('/request-reset', resetPasswordLimiter, authController.requestReset);
-// 2. Eksekusi reset password (Input Password Baru + Token dari Email)
 router.post('/reset-password', authController.resetPassword);
 
 module.exports = router;
