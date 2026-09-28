@@ -77,7 +77,7 @@ exports.adminRefundOrder = async (req, res) => {
 
         // 1. Lock order
         const [orderRows] = await connection.execute(
-            `SELECT o.id, o.customer_id, o.status, o.total_price, o.platform_fee, o.service_fee,
+            `SELECT o.id, o.customer_id, o.store_id, o.status, o.total_price, o.platform_fee, o.service_fee,
                     u.full_name AS customer_name
              FROM orders o
              JOIN users u ON u.id = o.customer_id
@@ -89,6 +89,7 @@ exports.adminRefundOrder = async (req, res) => {
             return res.status(404).json({ success: false, message: 'Order tidak ditemukan' });
         }
         const order = orderRows[0];
+        const previousStatus = order.status; // status sebelum refund (dipakai untuk notif mitra)
 
         // 2. Lock payment(s)
         const [paymentRows] = await connection.execute(
@@ -222,6 +223,31 @@ exports.adminRefundOrder = async (req, res) => {
             `Order #${orderId} direfund ${rupiah(refundAmount)} ke ${order.customer_name} oleh admin #${adminId}.`,
             { type: 'ADMIN_ORDER_ALERT', orderId: String(orderId), screen: 'OrderDetail' }
         ).catch((e) => console.error(`${tag} ❌ Notif admin error:`, e.message));
+
+        // Notifikasi ke mitra/toko: hanya jika order MASIH AKTIF saat direfund
+        // (accepted / on_the_way / working / pending). Kalau order sudah cancelled
+        // sebelumnya, mitra sudah tidak terlibat sehingga tidak perlu diberi tahu lagi.
+        if (previousStatus !== 'cancelled' && order.store_id) {
+            (async () => {
+                try {
+                    const [stores] = await db.execute(
+                        'SELECT user_id, store_name FROM stores WHERE id = ?',
+                        [order.store_id]
+                    );
+                    if (stores.length === 0) return;
+
+                    await sendToUser(
+                        stores[0].user_id,
+                        '❌ Pesanan Dibatalkan Admin',
+                        `Order #${orderId} dibatalkan oleh admin dan dana dikembalikan ke customer. Alasan: ${cleanReason}. Mohon hentikan pengerjaan.`,
+                        { type: 'ORDER_STATUS_UPDATE', orderId: String(orderId), status: 'cancelled', screen: 'OrderDetail' }
+                    );
+                    console.log(`${tag} 📲 Notif mitra terkirim (UID ${stores[0].user_id}, ${stores[0].store_name})`);
+                } catch (e) {
+                    console.error(`${tag} ❌ Notif mitra error:`, e.message);
+                }
+            })();
+        }
 
         res.json({
             success: true,
