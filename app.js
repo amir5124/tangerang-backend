@@ -26,6 +26,7 @@ const reviewRoutes = require('./routes/reviewRoutes');
 const bankRoutes = require('./routes/bankRoutes')
 const artRoutes = require('./routes/artRoutes')
 const artPaymentRoutes = require('./routes/artPaymentRoutes');
+const refundRoutes = require('./routes/refundRoutes')
 
 const app = express();
 app.set('trust proxy', 1);
@@ -93,6 +94,7 @@ app.use('/api/reviews', reviewRoutes);
 app.use('/api/bank', bankRoutes);
 app.use('/api/pesanan', artRoutes);
 app.use('/api/art-payment', artPaymentRoutes);
+app.use('/api/admin', refundRoutes);
 
 
 // --- 6. SERVER LISTENING ---
